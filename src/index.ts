@@ -302,7 +302,7 @@ function resetIdleTimer(chatId: number) {
 
         const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
             { role: "system", content: systemMessage },
-            ...history.map((h) => ({ role: h.role as "user" | "assistant", content: h.content })),
+            ...history.map((h) => ({ role: h.role as "user" | "assistant" | "system", content: h.content })),
         ];
 
         const responseText = await generateResponse(messages, 0, chatId, undefined, settings.temperature);
@@ -465,7 +465,7 @@ bot.on("message:text", async (ctx) => {
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: systemMessageWithMemory },
     ...history.map((h) => ({ 
-        role: h.role as "user" | "assistant", 
+        role: h.role as "user" | "assistant" | "system", 
         content: h.content, 
         name: h.name ? h.name.replace(/[^a-zA-Z0-9_-]/g, '_') : undefined // OpenAI name validation
     }))

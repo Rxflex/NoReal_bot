@@ -219,8 +219,11 @@ export async function changeReputation(userId: number, amount: number) {
 
 export async function getReputation(userId: number): Promise<number> {
     const repo = AppDataSource.getRepository(User);
-    const user = await repo.findOneBy({ id: userId.toString() });
-    return user ? user.reputation : 0;
+    const userIdStr = userId.toString();
+    const user = await repo.findOneBy({ id: userIdStr });
+    const rep = user ? user.reputation : 0;
+    console.log(`[DB] Reputation for user ${userIdStr}: ${rep}`);
+    return rep;
 }
 
 export async function upsertChatSettings(chatId: number, temperature: number, mood: string, replyChance: number) {
@@ -270,19 +273,37 @@ export async function shouldReplyPassive(chatId: number): Promise<boolean> {
 
 export async function addFact(userId: number, fact: string) {
     const repo = AppDataSource.getRepository(Fact);
+    const userIdStr = userId.toString();
+    
+    // Check for duplicates (within the last 50 facts or similar)
+    const existing = await repo.findOneBy({
+        user_id: userIdStr,
+        fact: fact
+    });
+
+    if (existing) {
+        console.log(`[DB] Fact already exists for user ${userIdStr}: ${fact.substring(0, 30)}...`);
+        return;
+    }
+
+    console.log(`[DB] Adding fact for user ${userIdStr}: ${fact.substring(0, 50)}...`);
     await repo.save({
-        user_id: userId.toString(),
+        user_id: userIdStr,
         fact: fact
     });
 }
 
 export async function getFacts(userId: number): Promise<string[]> {
     const repo = AppDataSource.getRepository(Fact);
+    const userIdStr = userId.toString();
+    
     const facts = await repo.find({
-        where: { user_id: userId.toString() },
+        where: { user_id: userIdStr },
         order: { created_at: "DESC" },
-        take: 10
+        take: 15
     });
+    
+    console.log(`[DB] Retrieved ${facts.length} facts for user ${userIdStr}`);
     return facts.map(f => f.fact);
 }
 

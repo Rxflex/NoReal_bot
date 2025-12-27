@@ -158,7 +158,7 @@ export async function summarizeHistory(
             model: "deepseek-ai/deepseek-v3.2",
             messages: [
                 ...messages,
-                { role: "user", content: summaryPrompt }
+                { role: "system", content: summaryPrompt }
             ],
             temperature: 0.3,
         });
