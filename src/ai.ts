@@ -155,7 +155,7 @@ export async function summarizeHistory(
     
     try {
         const response = await client.chat.completions.create({
-            model: "deepseek-ai/deepseek-v3.2",
+            model: "qwen/qwen3-next-80b-a3b-thinking",
             messages: [
                 ...messages,
                 { role: "system", content: summaryPrompt }
@@ -232,12 +232,14 @@ export async function generateResponse(
     let content = message.content || "";
     let toolCalls = message.tool_calls || [];
 
-    // --- Fallback: Parse text-based tool calls if any (for models like DeepSeek/Llama) ---
-    // Matches: <function(name){"arg":"val"}></function> or <function(name)>{"arg":"val"}</function>
-    const toolRegex = /<function\((\w+)\)>(.*?)<\/function>|<function\((\w+)\)({.*?})<\/function>/gs;
+    // --- Fallback: Parse text-based tool calls if any (for models like DeepSeek/Llama/Minimax) ---
+    // Format 1: <function(name){"arg":"val"}></function>
+    // Format 2: <tools>{"name": "fn", "arguments": {...}}</tools>
+    const toolRegex1 = /<function\((\w+)\)>(.*?)<\/function>|<function\((\w+)\)({.*?})<\/function>/gs;
+    const toolRegex2 = /<tools>(.*?)<\/tools>/gs;
     
     let match;
-    while ((match = toolRegex.exec(content)) !== null) {
+    while ((match = toolRegex1.exec(content)) !== null) {
       try {
         const name = match[1] || match[3];
         const argsText = match[2] || match[4];
@@ -248,14 +250,34 @@ export async function generateResponse(
           function: { name, arguments: JSON.stringify(args) }
         });
       } catch (e) {
-        console.error("[AI] Failed to parse text-based tool call:", e);
+        console.error("[AI] Failed to parse Format 1 tool call:", e);
       }
+    }
+
+    while ((match = toolRegex2.exec(content)) !== null) {
+        try {
+            const data = JSON.parse(match[1].trim());
+            const toolsArr = Array.isArray(data) ? data : [data];
+            for (const t of toolsArr) {
+                toolCalls.push({
+                    id: `call_${Math.random().toString(36).substring(7)}`,
+                    type: 'function',
+                    function: { 
+                        name: t.name, 
+                        arguments: typeof t.arguments === 'string' ? t.arguments : JSON.stringify(t.arguments) 
+                    }
+                });
+            }
+        } catch (e) {
+            console.error("[AI] Failed to parse Format 2 tool call:", e);
+        }
     }
     
     // Remove tool call tags and thinking blocks from content to keep it clean for the user
     content = content.replace(/<\|python_tag\|>/g, "");
     content = content.replace(/<function\(.*?\)>.*?<\/function>/gs, "");
     content = content.replace(/<function\(.*?\){.*?}<\/function>/gs, "");
+    content = content.replace(/<tools>.*?<\/tools>/gs, "");
     content = content.replace(/<think>.*?<\/think>/gs, "");
     content = content.trim();
 
@@ -267,24 +289,26 @@ export async function generateResponse(
       for (const toolCall of toolCalls) {
         if (toolCall.type !== 'function') continue;
 
-        const fnName = toolCall.function.name;
+        const rawFnName = toolCall.function.name;
+        // Normalize name: lowercase and remove underscores for comparison
+        const normFnName = rawFnName.toLowerCase().replace(/_/g, "");
         const args = JSON.parse(toolCall.function.arguments);
         let result: string;
 
-        console.log(`[AI][${chatId}] Tool Call: ${fnName}`, args);
+        console.log(`[AI][${chatId}] Tool Call: ${rawFnName} (norm: ${normFnName})`, args);
         const toolStartTime = Date.now();
 
-        if (fnName === "search_web") {
+        if (normFnName === "searchweb") {
           result = await searchWeb(args.query || args.keyword || args.q);
-        } else if (fnName === "get_funny_image") {
+        } else if (normFnName === "getfunnyimage") {
           result = await getFunnyImage(args.keyword || args.query || args.q);
-        } else if (fnName === "save_memory") {
+        } else if (normFnName === "savememory") {
           addFact(userId, args.fact || args.memory || args.text);
           result = `Memory saved: ${args.fact || args.memory || args.text}`;
-        } else if (fnName === "delete_memory") {
+        } else if (normFnName === "deletememory") {
           await deleteFact(userId, args.fact || args.memory || args.text);
           result = `Memory deleted: ${args.fact || args.memory || args.text}`;
-        } else if (fnName === "set_reminder") {
+        } else if (normFnName === "setreminder") {
           const seconds = args.seconds || args.time || args.delay;
           const text = args.text || args.message || args.reminder;
           if (onReminder && typeof seconds === 'number' && text) {
@@ -293,7 +317,7 @@ export async function generateResponse(
           } else {
              result = `Error: Missing parameters for reminder (seconds: ${seconds}, text: ${text})`;
           }
-        } else if (fnName === "change_user_reputation") {
+        } else if (normFnName === "changeuserreputation") {
             const targetId = parseInt(args.user_id);
             if (isNaN(targetId)) {
                 result = `Error: user_id must be a numeric string. Got: ${args.user_id}`;
@@ -301,7 +325,7 @@ export async function generateResponse(
                 await changeReputation(targetId, args.amount);
                 result = `Reputation of user ${targetId} changed by ${args.amount}. Reason: ${args.reason}`;
             }
-        } else if (fnName === "update_relationship") {
+        } else if (normFnName === "updaterelationship") {
             const id1 = parseInt(args.user_id_1);
             const id2 = parseInt(args.user_id_2);
             if (isNaN(id1) || isNaN(id2)) {
@@ -310,7 +334,7 @@ export async function generateResponse(
                 await updateRelationship(chatId, id1, id2, args.affection_delta, args.status);
                 result = `Relationship between ${id1} and ${id2} updated (delta: ${args.affection_delta}).`;
             }
-        } else if (fnName === "get_chat_info") {
+        } else if (normFnName === "getchatinfo") {
             const users = await getAllUsersInChat(chatId);
             const rels = await getRelationships(chatId);
             result = JSON.stringify({
