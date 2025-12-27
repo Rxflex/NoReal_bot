@@ -141,7 +141,7 @@ export async function summarizeHistory(
     
     try {
         const response = await client.chat.completions.create({
-            model: "minimaxai/minimax-m2",
+            model: "deepseek-ai/deepseek-v3.2",
             messages: [
                 ...messages,
                 { role: "user", content: summaryPrompt }
