@@ -1,7 +1,7 @@
 import "reflect-metadata";
 import { Bot, Context } from "grammy";
 import { run } from "@grammyjs/runner";
-import { upsertUser, addMessage, getHistory, getFacts, upsertChatSettings, getChatSettings, getReputation, initDB, getChatSummary, getRelationships, getUser, addReminder, getPendingReminders, markReminderSent } from "./db";
+import { upsertUser, addMessage, getHistory, getFacts, upsertChatSettings, getChatSettings, getReputation, initDB, getChatSummary, getRelationships, getUser, addReminder, getPendingReminders, markReminderSent, shouldReplyPassive } from "./db";
 import { generateResponse, summarizeHistory } from "./ai";
 import OpenAI from "openai";
 
@@ -127,7 +127,8 @@ bot.command("commands", (ctx) => {
         "⚙️ **Настройки (для чата):**\n" +
         "/settings — Текущие настройки чата.\n" +
         "/set_temp <0.1-1.5> — Уровень безумия.\n" +
-        "/set_mood <mood> — Мое настроение (neutral, playful, flirty, angry, toxic, sad).\n\n" +
+        "/set_mood <mood> — Мое настроение (neutral, playful, flirty, angry, toxic, sad).\n" +
+        "/set_chance <0-100> — Как часто я отвечаю сам (в %).\n\n" +
         "🆘 **Помощь:**\n" +
         "/help — Краткая справка.\n" +
         "/start — Перезапуск и описание."
@@ -139,8 +140,9 @@ bot.command("settings", async (ctx) => {
     safeReply(ctx, 
         "⚙️ **Настройки чата:**\n\n" +
         `🌡 **Температура:** ${settings.temperature}\n` +
-        `🎭 **Настроение:** ${settings.mood}\n\n` +
-        "Изменить: /set_temp или /set_mood"
+        `🎭 **Настроение:** ${settings.mood}\n` +
+        `🎲 **Частота ответов:** ${settings.reply_chance}%\n\n` +
+        "Изменить: /set_temp, /set_mood или /set_chance"
     );
 });
 
@@ -232,7 +234,7 @@ bot.command("set_temp", async (ctx) => {
     }
 
     const settings = await getChatSettings(ctx.chat.id);
-    await upsertChatSettings(ctx.chat.id, temp, settings.mood);
+    await upsertChatSettings(ctx.chat.id, temp, settings.mood, settings.reply_chance);
     ctx.reply(`Температура установлена на ${temp}.`);
 });
 
@@ -246,8 +248,22 @@ bot.command("set_mood", async (ctx) => {
     }
 
     const settings = await getChatSettings(ctx.chat.id);
-    await upsertChatSettings(ctx.chat.id, settings.temperature, mood);
+    await upsertChatSettings(ctx.chat.id, settings.temperature, mood, settings.reply_chance);
     ctx.reply(`Настроение изменено на: ${mood}`);
+});
+
+bot.command("set_chance", async (ctx) => {
+    const args = ctx.match;
+    if (!args) return ctx.reply("Использование: /set_chance <0-100>");
+
+    const chance = parseInt(args.toString());
+    if (isNaN(chance) || chance < 0 || chance > 100) {
+        return ctx.reply("Укажи число от 0 до 100");
+    }
+
+    const settings = await getChatSettings(ctx.chat.id);
+    await upsertChatSettings(ctx.chat.id, settings.temperature, settings.mood, chance);
+    ctx.reply(`Шанс ответа установлен на ${chance}%.`);
 });
 
 // --- Idle Timer Logic ---
@@ -379,9 +395,9 @@ bot.on("message:text", async (ctx) => {
       return;
   }
 
-  const randomChance = Math.random() < 0.08; // 8% chance to reply spontaneously in groups
   let reason = "";
   let isPassive = false;
+  let isLucky = false;
 
   if (isPrivate) {
       reason = "Private chat";
@@ -390,9 +406,10 @@ bot.on("message:text", async (ctx) => {
   } else {
       reason = "Passive monitoring";
       isPassive = true;
+      isLucky = await shouldReplyPassive(chatId);
   }
 
-  console.log(`[Bot][${chatId}] Processing message. Mode: ${isPassive ? 'Passive' : 'Active'} (${reason}). Chance to reply: ${isPassive ? (randomChance ? 'YES' : 'NO') : 'N/A'}`);
+  console.log(`[Bot][${chatId}] Processing message. Mode: ${isPassive ? 'Passive' : 'Active'} (${reason}). Should reply: ${isPassive ? (isLucky ? 'YES' : 'NO') : 'N/A'}`);
 
   // 3. Build Context (RAG + History)
   const history = await getHistory(chatId, 15); // Slightly more history for context
@@ -480,8 +497,8 @@ bot.on("message:text", async (ctx) => {
 
   // 5. Send Response & Save to History
   if (responseText) {
-      if (isPassive && !randomChance) {
-          console.log(`[Bot][${chatId}] Passive mode: AI generated response but suppressed by random chance.`);
+      if (isPassive && !isLucky) {
+          console.log(`[Bot][${chatId}] Passive mode: AI generated response but suppressed (not lucky yet).`);
           return;
       }
 

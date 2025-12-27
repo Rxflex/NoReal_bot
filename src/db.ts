@@ -94,6 +94,12 @@ export class ChatSettings {
 
     @Column({ type: "varchar", length: 50, default: "neutral" })
     mood!: string;
+
+    @Column({ type: "int", default: 10 })
+    reply_chance!: number; // 0-100 percentage
+
+    @Column({ type: "int", default: 0 })
+    message_counter!: number;
 }
 
 @Entity("chat_summaries")
@@ -217,18 +223,49 @@ export async function getReputation(userId: number): Promise<number> {
     return user ? user.reputation : 0;
 }
 
-export async function upsertChatSettings(chatId: number, temperature: number, mood: string) {
+export async function upsertChatSettings(chatId: number, temperature: number, mood: string, replyChance: number) {
     const repo = AppDataSource.getRepository(ChatSettings);
     await repo.upsert(
-        { chat_id: chatId.toString(), temperature, mood },
+        { chat_id: chatId.toString(), temperature, mood, reply_chance: replyChance },
         ["chat_id"]
     );
 }
 
-export async function getChatSettings(chatId: number): Promise<{ temperature: number, mood: string }> {
+export async function getChatSettings(chatId: number): Promise<{ temperature: number, mood: string, reply_chance: number, message_counter: number }> {
     const repo = AppDataSource.getRepository(ChatSettings);
     const settings = await repo.findOneBy({ chat_id: chatId.toString() });
-    return settings || { temperature: 0.7, mood: 'neutral' };
+    return settings || { temperature: 0.7, mood: 'neutral', reply_chance: 10, message_counter: 0 };
+}
+
+/**
+ * Increments the message counter for a chat.
+ * Returns true if the bot should reply based on the accumulated "tension".
+ * This is more deterministic than pure random.
+ */
+export async function shouldReplyPassive(chatId: number): Promise<boolean> {
+    const repo = AppDataSource.getRepository(ChatSettings);
+    const chatIdStr = chatId.toString();
+    let settings = await repo.findOneBy({ chat_id: chatIdStr });
+    
+    if (!settings) {
+        settings = repo.create({ chat_id: chatIdStr, reply_chance: 10, message_counter: 0 });
+    }
+
+    settings.message_counter += 1;
+    
+    // Threshold is 100 / chance. e.g. 10% chance -> every 10 messages.
+    // We add a tiny bit of jitter to avoid it being TOO predictable, 
+    // but the core is the counter.
+    const threshold = 100 / (settings.reply_chance || 1);
+    
+    if (settings.message_counter >= threshold) {
+        settings.message_counter = 0;
+        await repo.save(settings);
+        return true;
+    }
+
+    await repo.save(settings);
+    return false;
 }
 
 export async function addFact(userId: number, fact: string) {
