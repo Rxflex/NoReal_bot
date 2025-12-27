@@ -1,7 +1,7 @@
 import "reflect-metadata";
 import { Bot, Context } from "grammy";
-import { upsertUser, addMessage, getHistory, getFacts, upsertChatSettings, getChatSettings, getReputation, initDB } from "./db";
-import { generateResponse } from "./ai";
+import { upsertUser, addMessage, getHistory, getFacts, upsertChatSettings, getChatSettings, getReputation, initDB, getChatSummary } from "./db";
+import { generateResponse, summarizeHistory } from "./ai";
 import OpenAI from "openai";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -218,16 +218,20 @@ bot.on("message:text", async (ctx) => {
   console.log(`[Bot][${chatId}] Decided to reply. Reason: ${reason}`);
 
   // 3. Build Context (RAG + History)
-  const history = await getHistory(chatId, 15); // Increased history
+  const history = await getHistory(chatId, 10); // Reduced history, compensated by summary
   const facts = await getFacts(userId); // Retrieved memories
   const settings = await getChatSettings(chatId);
   const userReputation = await getReputation(userId);
+  const chatSummary = await getChatSummary(chatId);
 
   const moodPrompt = MOOD_PROMPTS[settings.mood] || "";
   
   const systemMessageWithMemory = `
     ${BASE_SYSTEM_PROMPT}
     ${moodPrompt}
+    
+    [КРАТКОЕ СОДЕРЖАНИЕ ПРЕДЫДУЩЕГО РАЗГОВОРА]
+    ${chatSummary || "Разговор только начался."}
     
     [ИНФОРМАЦИЯ О СОБЕСЕДНИКЕ]
     Имя: ${firstName} (@${username})
@@ -252,14 +256,24 @@ bot.on("message:text", async (ctx) => {
     - Отвечай кратко, в стиле переписки в чате.
   `;
 
+  // Trigger background summarization if history is long (approx. every 10-15 messages)
+  // We check the history from DB directly for total count or just use a random chance/threshold
+  if (history.length >= 10 && Math.random() < 0.2) {
+      const fullHistory = await getHistory(chatId, 20);
+      summarizeHistory(chatId, fullHistory.map(h => ({ 
+          role: h.role as any, 
+          content: h.content, 
+          name: h.name?.replace(/[^a-zA-Z0-9_-]/g, '_') 
+      }))).catch(e => console.error("Background summary error:", e));
+  }
+
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: systemMessageWithMemory },
     ...history.map((h) => ({ 
         role: h.role as "user" | "assistant", 
         content: h.content, 
         name: h.name ? h.name.replace(/[^a-zA-Z0-9_-]/g, '_') : undefined // OpenAI name validation
-    })),
-    { role: "user", content: text, name: firstName.replace(/[^a-zA-Z0-9_-]/g, '_') }
+    }))
   ];
 
   // 4. Generate Response

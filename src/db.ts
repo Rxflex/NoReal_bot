@@ -1,5 +1,5 @@
 import "reflect-metadata";
-import { DataSource, Entity, PrimaryColumn, Column, PrimaryGeneratedColumn, CreateDateColumn, ManyToOne, JoinColumn } from "typeorm";
+import { DataSource, Entity, PrimaryColumn, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn } from "typeorm";
 import * as path from "path";
 import * as fs from "fs";
 
@@ -96,6 +96,18 @@ export class ChatSettings {
     mood!: string;
 }
 
+@Entity("chat_summaries")
+export class ChatSummary {
+    @PrimaryColumn({ type: "bigint" })
+    chat_id!: string;
+
+    @Column({ type: "text" })
+    content!: string;
+
+    @UpdateDateColumn()
+    updated_at!: Date;
+}
+
 // --- DataSource Setup ---
 
 const DB_TYPE = process.env.DB_TYPE || "sqlite";
@@ -114,7 +126,7 @@ if (isMysql) {
         charset: "utf8mb4_unicode_ci",
         synchronize: true, // Auto-create tables
         logging: false,
-        entities: [User, Fact, History, ChatSettings, Relationship],
+        entities: [User, Fact, History, ChatSettings, Relationship, ChatSummary],
     };
 } else {
     const DB_PATH = process.env.DB_PATH || path.join("/tmp", "bot_memory.sqlite");
@@ -127,7 +139,7 @@ if (isMysql) {
         database: DB_PATH,
         synchronize: true,
         logging: false,
-        entities: [User, Fact, History, ChatSettings, Relationship],
+        entities: [User, Fact, History, ChatSettings, Relationship, ChatSummary],
     };
 }
 
@@ -262,6 +274,20 @@ export async function getRelationships(chatId: number): Promise<Relationship[]> 
     return await repo.find({
         where: { chat_id: chatId.toString() }
     });
+}
+
+export async function updateChatSummary(chatId: number, content: string) {
+    const repo = AppDataSource.getRepository(ChatSummary);
+    await repo.upsert(
+        { chat_id: chatId.toString(), content },
+        ["chat_id"]
+    );
+}
+
+export async function getChatSummary(chatId: number): Promise<string | null> {
+    const repo = AppDataSource.getRepository(ChatSummary);
+    const summary = await repo.findOneBy({ chat_id: chatId.toString() });
+    return summary ? summary.content : null;
 }
 
 export async function getAllUsersInChat(chatId: number): Promise<User[]> {

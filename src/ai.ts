@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { searchWeb, getFunnyImage } from "./tools";
-import { addFact, changeReputation, updateRelationship, getRelationships, getAllUsersInChat, getUser } from "./db";
+import { addFact, changeReputation, updateRelationship, getRelationships, getAllUsersInChat, getUser, updateChatSummary } from "./db";
 
 const client = new OpenAI({
   baseURL: process.env.OPENAI_BASE_URL || "http://localhost:1234/v1",
@@ -15,7 +15,9 @@ const client = new OpenAI({
     headers.set("Origin", "https://aio.ooy.cz");
     headers.set("Accept", "application/json");
 
-    return fetch(url, { ...init, headers });
+    const res = await fetch(url, { ...init, headers });
+    console.log(`[AI Response] ${res.status} ${res.statusText}`);
+    return res;
   }
 });
 
@@ -124,6 +126,39 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   },
 ];
 
+export async function summarizeHistory(
+  chatId: number,
+  messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]
+) {
+    if (messages.length < 5) return;
+    
+    console.log(`[AI][${chatId}] Summarizing conversation...`);
+    const summaryPrompt = `
+      Сделай краткую выжимку этого диалога на русском языке. 
+      Укажи ключевые темы, принятые решения и важные детали о пользователях.
+      Пиши кратко, в 2-3 предложениях.
+    `;
+    
+    try {
+        const response = await client.chat.completions.create({
+            model: "minimaxai/minimax-m2",
+            messages: [
+                ...messages,
+                { role: "user", content: summaryPrompt }
+            ],
+            temperature: 0.3,
+        });
+        
+        const summary = response.choices[0]?.message?.content;
+        if (summary) {
+            console.log(`[AI][${chatId}] New summary: ${summary}`);
+            await updateChatSummary(chatId, summary);
+        }
+    } catch (e) {
+        console.error(`[AI][${chatId}] Summarization failed:`, e);
+    }
+}
+
 export async function generateResponse(
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
   userId: number,
@@ -138,7 +173,34 @@ export async function generateResponse(
       return "Уф, я немного запутался. Давай попробуем еще раз.";
   }
 
+  // --- Context Management: Truncate messages if they are too long ---
+  const MAX_CHARS = 40000; // Rough limit for context window
+  let totalChars = JSON.stringify(messages).length;
+  
+  if (totalChars > MAX_CHARS) {
+      console.log(`[AI][${chatId}] Context too large (${totalChars} chars), truncating history...`);
+      const systemMsg = messages[0]?.role === 'system' ? messages[0] : null;
+      const others = messages.slice(systemMsg ? 1 : 0);
+      
+      let currentChars = systemMsg ? JSON.stringify(systemMsg).length : 0;
+      const kept: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
+      
+      for (let i = others.length - 1; i >= 0; i--) {
+          const msg = others[i];
+          const msgLen = JSON.stringify(msg).length;
+          if (currentChars + msgLen > MAX_CHARS) break;
+          kept.unshift(msg);
+          currentChars += msgLen;
+      }
+      
+      messages = systemMsg ? [systemMsg, ...kept] : kept;
+      totalChars = JSON.stringify(messages).length;
+      console.log(`[AI][${chatId}] Truncated context to ${messages.length} messages (${totalChars} chars)`);
+  }
+
   try {
+    console.log(`[AI][${chatId}] Sending request (Messages: ${messages.length}, Size: ${totalChars} chars, Depth: ${depth})`);
+    
     const response = await client.chat.completions.create({
       model: "minimaxai/minimax-m2",
       messages: messages,
@@ -236,6 +298,12 @@ export async function generateResponse(
 
         const toolDuration = Date.now() - toolStartTime;
         console.log(`[AI][${chatId}] Tool Finish: ${fnName} in ${toolDuration}ms`);
+
+        // Truncate results if they are too long to prevent context overflow
+        if (result.length > 10000) {
+            console.log(`[AI][${chatId}] Truncating tool result for ${fnName} (${result.length} chars)`);
+            result = result.substring(0, 10000) + "... [truncated]";
+        }
 
         messages.push({
           tool_call_id: (toolCall as any).id,
