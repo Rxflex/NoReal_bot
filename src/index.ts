@@ -50,8 +50,32 @@ const MOOD_PROMPTS: Record<string, string> = {
 /**
  * Sends a message with Markdown if it contains markdown characters, 
  * and falls back to plain text if parsing fails.
+ * Also detects image URLs and sends them as photos.
  */
 async function safeReply(ctx: any, text: string, extra: any = {}) {
+    // Regex to detect image URLs (common extensions)
+    const imageRegex = /(https?:\/\/.*\.(?:png|jpg|jpeg|gif|webp))/i;
+    const imageMatch = text.match(imageRegex);
+
+    if (imageMatch) {
+        const imageUrl = imageMatch[1];
+        // Remove the URL from the text to use the rest as a caption
+        const caption = text.replace(imageUrl, "").trim();
+        
+        try {
+            const hasMarkdown = /[*_`\[]/.test(caption);
+            const photoOptions = { 
+                ...extra, 
+                caption: caption || undefined,
+                parse_mode: hasMarkdown ? "Markdown" : undefined 
+            };
+            return await ctx.replyWithPhoto(imageUrl, photoOptions);
+        } catch (e) {
+            console.error(`[Bot] Failed to send photo, falling back to text. Error:`, (e as any).message);
+            // If replyWithPhoto fails, fall back to normal text reply
+        }
+    }
+
     const hasMarkdown = /[*_`\[]/.test(text);
     
     if (!hasMarkdown) {
@@ -70,6 +94,26 @@ async function safeReply(ctx: any, text: string, extra: any = {}) {
  * Similar to safeReply but for bot.api.sendMessage
  */
 async function safeSendMessage(chatId: string | number, text: string, extra: any = {}) {
+    const imageRegex = /(https?:\/\/.*\.(?:png|jpg|jpeg|gif|webp))/i;
+    const imageMatch = text.match(imageRegex);
+
+    if (imageMatch) {
+        const imageUrl = imageMatch[1];
+        const caption = text.replace(imageUrl, "").trim();
+        
+        try {
+            const hasMarkdown = /[*_`\[]/.test(caption);
+            const photoOptions = { 
+                ...extra, 
+                caption: caption || undefined,
+                parse_mode: hasMarkdown ? "Markdown" : undefined 
+            };
+            return await bot.api.sendPhoto(chatId, imageUrl, photoOptions);
+        } catch (e) {
+            console.error(`[Bot] Failed to sendPhoto, falling back to text. Error:`, (e as any).message);
+        }
+    }
+
     const hasMarkdown = /[*_`\[]/.test(text);
     
     if (!hasMarkdown) {
