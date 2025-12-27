@@ -159,6 +159,9 @@ bot.on("message:text", async (ctx) => {
   const text = ctx.message.text;
   const username = ctx.from.username || "Unknown";
   const firstName = ctx.from.first_name || "Anon";
+  const chatTitle = ctx.chat.type === "private" ? "Private" : ctx.chat.title;
+
+  console.log(`[Msg][${chatId}] From: ${firstName} (@${username}) in "${chatTitle}": ${text.substring(0, 50)}${text.length > 50 ? '...' : ''}`);
 
   // Reset the idle timer whenever there is activity
   resetIdleTimer(chatId);
@@ -185,6 +188,7 @@ bot.on("message:text", async (ctx) => {
   
   // Handle "what can you do" natural query
   if (lowerText.includes("бублик что ты умеешь") || lowerText.includes("бублик, что ты умеешь")) {
+      console.log(`[Bot][${chatId}] Triggered help/capabilities info`);
       await ctx.reply(
         "🍩 **Что я умею:**\n\n" +
         "Я — Норел (Бублик), твой AI-собеседник.\n" +
@@ -202,10 +206,16 @@ bot.on("message:text", async (ctx) => {
   }
 
   const randomChance = Math.random() < 0.10; // 10% chance to reply spontaneously in groups
+  let reason = "";
+  if (isPrivate) reason = "Private chat";
+  else if (isMentioned) reason = "Mentioned/Reply";
+  else if (randomChance) reason = "Random 10% chance";
 
-  if (!isPrivate && !isMentioned && !randomChance) {
+  if (!reason) {
     return;
   }
+
+  console.log(`[Bot][${chatId}] Decided to reply. Reason: ${reason}`);
 
   // 3. Build Context (RAG + History)
   const history = await getHistory(chatId, 15); // Increased history
@@ -222,15 +232,19 @@ bot.on("message:text", async (ctx) => {
     [ИНФОРМАЦИЯ О СОБЕСЕДНИКЕ]
     Имя: ${firstName} (@${username})
     ID: ${userId}
-    Репутация: ${userReputation} (чем выше, тем ты дружелюбнее)
+    Твоя Репутация у этого пользователя: ${userReputation} (рейтинг дружбы)
     Факты: ${facts.length > 0 ? facts.join("; ") : "нет данных"} 
+    
+    [ПРАВИЛА ОТНОШЕНИЙ]
+    1. Если Репутация < 10: Ты считаешь этого человека незнакомцем. Если он называет тебя "Бублик", ты ОБЯЗАТЕЛЬНО злишься, хамишь или отстраненно ставишь его на место. Ты не позволяешь незнакомым такое панибратство.
+    2. Если Репутация >= 50: Вы — лучшие друзья, "Бублик" для тебя — это ласковое прозвище, на которое ты реагируешь тепло или по-доброму подкалываешь в ответ.
+    3. Если репутация между 10 и 50: Ты терпишь прозвище, но можешь саркастично напомнить, что вы еще не настолько близки.
     
     [ОТНОШЕНИЯ И ШИППЕРИНГ]
     - Ты следишь за взаимодействием людей в чате. 
     - Если видишь, что кто-то мило общается или ссорится, используй 'update_relationship' (нужны ID обоих).
-    - Ты можешь 'шипперить' людей (сводить их, придумывать им названия пар), если считаешь это уместным и смешным.
+    - Ты можешь 'шипперить' людей, если считаешь это уместным.
     - Используй 'get_chat_info', чтобы узнать, кто есть в чате и какие между ними отношения.
-    - Если репутация пользователя низкая (< 0), ты можешь быть более токсичным или игнорировать его просьбы. Если высокая (> 50), ты считаешь его бро/лучшим другом.
     
     [ИНСТРУКЦИИ]
     - Если пользователь сообщил новый факт о себе, сохрани это через 'save_memory'.
@@ -256,7 +270,7 @@ bot.on("message:text", async (ctx) => {
   ctx.replyWithChatAction("typing").catch(() => {}); // Initial call
   
   const scheduleReminder = (seconds: number, reminderText: string) => {
-      console.log(`[Reminder] Scheduled in ${seconds}s: ${reminderText}`);
+      console.log(`[Bot][${chatId}] Scheduled reminder in ${seconds}s: ${reminderText}`);
       setTimeout(() => {
           bot.api.sendMessage(chatId, `⏰ Эй, ${firstName}, напоминаю: ${reminderText}`)
              .catch(e => console.error("Failed to send reminder:", e));
@@ -264,6 +278,7 @@ bot.on("message:text", async (ctx) => {
   };
 
   let responseText: string | null = null;
+  const aiStartTime = Date.now();
   try {
       responseText = await generateResponse(messages, userId, chatId, scheduleReminder, settings.temperature);
   } finally {
@@ -272,14 +287,17 @@ bot.on("message:text", async (ctx) => {
 
   // 5. Send Response & Save to History
   if (responseText) {
+      const aiDuration = Date.now() - aiStartTime;
+      console.log(`[Bot][${chatId}] Sending response (${aiDuration}ms): ${responseText.substring(0, 50)}...`);
       try {
         await ctx.reply(responseText, { parse_mode: "Markdown" });
       } catch (e) {
-        console.error("Failed to send markdown, falling back to text:", e);
-        await ctx.reply(responseText); // Fallback if markdown is broken
+        console.error(`[Bot][${chatId}] Markdown failed, falling back to text`);
+        await ctx.reply(responseText);
       }
       await addMessage(chatId, "assistant", responseText as string);
   } else {
+      console.error(`[Bot][${chatId}] AI failed to generate response`);
       await ctx.reply("System error: 502 Bad Gateway (AI Server is down or rejecting requests). Try again later.");
   }
 });

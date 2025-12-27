@@ -132,22 +132,26 @@ export async function generateResponse(
   temperature: number = 0.7,
   depth: number = 0
 ) {
+  const startTime = Date.now();
   if (depth > 5) {
-      console.warn("[AI] Max recursion depth reached.");
+      console.warn(`[AI][${chatId}] Max recursion depth reached.`);
       return "Уф, я немного запутался. Давай попробуем еще раз.";
   }
 
   try {
     const response = await client.chat.completions.create({
-      model: "qwen/qwen3-next-80b-a3b-thinking", // Changed to a standard model to fix 502 errors
+      model: "minimaxai/minimax-m2",
       messages: messages,
       tools: tools,
       tool_choice: "auto",
       temperature: temperature,
     });
 
+    const duration = Date.now() - startTime;
     const message = response.choices[0]?.message;
     if (!message) return null;
+
+    console.log(`[AI][${chatId}] Response received in ${duration}ms (Depth: ${depth})`);
 
     let content = message.content || "";
     let toolCalls = message.tool_calls || [];
@@ -191,7 +195,8 @@ export async function generateResponse(
         const args = JSON.parse(toolCall.function.arguments);
         let result: string;
 
-        console.log(`[AI] Calling tool: ${fnName}`, args);
+        console.log(`[AI][${chatId}] Tool Call: ${fnName}`, args);
+        const toolStartTime = Date.now();
 
         if (fnName === "search_web") {
           result = await searchWeb(args.query || args.keyword || args.q);
@@ -228,6 +233,9 @@ export async function generateResponse(
         } else {
           result = "Unknown tool.";
         }
+
+        const toolDuration = Date.now() - toolStartTime;
+        console.log(`[AI][${chatId}] Tool Finish: ${fnName} in ${toolDuration}ms`);
 
         messages.push({
           tool_call_id: (toolCall as any).id,

@@ -216,19 +216,18 @@ export async function addMessage(chatId: number, role: 'user' | 'assistant' | 's
     });
 }
 
-export async function getHistory(chatId: number, limit: number = 10): Promise<{ role: string, content: string, name?: string }[]> {
+export async function getHistory(chatId: number, limit: number = 10): Promise<{ role: string, content: string, name?: string, userId?: string }[]> {
     const repo = AppDataSource.getRepository(History);
     const history = await repo.find({
         where: { chat_id: chatId.toString() },
         order: { id: "DESC" }, // Use ID for strict insertion order
         take: limit
     });
-    // TypeORM returns entities with all properties.
-    // The previous interface expected { role, content, name? }. Entities satisfy this.
     return history.reverse().map(h => ({
         role: h.role,
         content: h.content,
-        name: h.name
+        name: h.name,
+        userId: h.user_id
     }));
 }
 
