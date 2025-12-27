@@ -55,11 +55,12 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "save_memory",
-      description: "Save a specific fact about the user to long-term memory. Use this when the user tells you their name, preferences, job, location, etc.",
+      description: "Save a specific fact about the user. IMPORTANT: Decide how long to remember this. For permanent things (name, personality) don't set ttl. For temporary things (plans for tonight, current mood, 'going to shop') set ttl_seconds (e.g., 3600 for 1h, 86400 for 1 day).",
       parameters: {
         type: "object",
         properties: {
-          fact: { type: "string", description: "The clear, concise fact to remember (e.g., 'User loves pizza', 'User is named Alex')." },
+          fact: { type: "string", description: "The clear, concise fact to remember." },
+          ttl_seconds: { type: "number", description: "How long to remember this in seconds. Omit for permanent storage." },
         },
         required: ["fact"],
       },
@@ -319,8 +320,9 @@ export async function generateResponse(
         } else if (normFnName === "getfunnyimage") {
           result = await getFunnyImage(args.keyword || args.query || args.q);
         } else if (normFnName === "savememory") {
-          addFact(userId, args.fact || args.memory || args.text);
-          result = `Memory saved: ${args.fact || args.memory || args.text}`;
+          const ttl = args.ttl_seconds || args.ttl || args.duration;
+          await addFact(userId, args.fact || args.memory || args.text, ttl);
+          result = `Memory saved: ${args.fact || args.memory || args.text} (TTL: ${ttl || 'inf'})`;
         } else if (normFnName === "deletememory") {
           await deleteFact(userId, args.fact || args.memory || args.text);
           result = `Memory deleted: ${args.fact || args.memory || args.text}`;

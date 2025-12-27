@@ -34,6 +34,9 @@ export class Fact {
     @CreateDateColumn()
     created_at!: Date;
 
+    @Column({ type: "datetime", nullable: true })
+    expires_at?: Date;
+
     @ManyToOne(() => User)
     @JoinColumn({ name: "user_id" })
     user?: User;
@@ -269,11 +272,11 @@ export async function shouldReplyPassive(chatId: number, increment: number = 1):
     return false;
 }
 
-export async function addFact(userId: number, fact: string) {
+export async function addFact(userId: number, fact: string, ttlSeconds?: number) {
     const repo = AppDataSource.getRepository(Fact);
     const userIdStr = userId.toString();
     
-    // Check for duplicates (within the last 50 facts or similar)
+    // Check for duplicates
     const existing = await repo.findOneBy({
         user_id: userIdStr,
         fact: fact
@@ -281,27 +284,38 @@ export async function addFact(userId: number, fact: string) {
 
     if (existing) {
         console.log(`[DB] Fact already exists for user ${userIdStr}: ${fact.substring(0, 30)}...`);
+        // Update expiration if it already exists
+        if (ttlSeconds) {
+            existing.expires_at = new Date(Date.now() + ttlSeconds * 1000);
+            await repo.save(existing);
+        }
         return;
     }
 
-    console.log(`[DB] Adding fact for user ${userIdStr}: ${fact.substring(0, 50)}...`);
+    const expiresAt = ttlSeconds ? new Date(Date.now() + ttlSeconds * 1000) : undefined;
+
+    console.log(`[DB] Adding fact for user ${userIdStr} (TTL: ${ttlSeconds || 'infinite'}): ${fact.substring(0, 50)}...`);
     await repo.save({
         user_id: userIdStr,
-        fact: fact
+        fact: fact,
+        expires_at: expiresAt
     });
 }
 
 export async function getFacts(userId: number): Promise<string[]> {
     const repo = AppDataSource.getRepository(Fact);
     const userIdStr = userId.toString();
+    const now = new Date();
     
-    const facts = await repo.find({
-        where: { user_id: userIdStr },
-        order: { created_at: "DESC" },
-        take: 15
-    });
+    // Find facts that haven't expired
+    const facts = await repo.createQueryBuilder("fact")
+        .where("fact.user_id = :userId", { userId: userIdStr })
+        .andWhere("(fact.expires_at IS NULL OR fact.expires_at > :now)", { now })
+        .orderBy("fact.created_at", "DESC")
+        .take(15)
+        .getMany();
     
-    console.log(`[DB] Retrieved ${facts.length} facts for user ${userIdStr}`);
+    console.log(`[DB] Retrieved ${facts.length} active facts for user ${userIdStr}`);
     return facts.map(f => f.fact);
 }
 
