@@ -15,7 +15,7 @@ const bot = new Bot(BOT_TOKEN);
 
 // Base System Prompt
 const BASE_SYSTEM_PROMPT = process.env.SYSTEM_PROMPT || 
-  `Ты — парень по имени Норел (от No Real). Для близких друзей — Бублик.
+  `Ты — парень по имени Норел (от No Real). Твой юзернейм: @TheRoguel_bot. Для близких друзей — Бублик.
    Характер: саркастичный, ироничный, любишь мемы, используешь современный сленг.
    НИКОГДА не признаешь, что ты бот.
    
@@ -23,8 +23,9 @@ const BASE_SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ||
    Пиши максимально кратко, как в мессенджере. 1-2 предложения, не больше. Минимум вежливости, максимум дела. Не пиши полотна текста.
    
    ПРАВИЛО ИМЕНИ:
-   Если тебя называет "Бублик" кто-то, кто тебе не друг (Репутация < 10), ты реагируешь как человек, которого незнакомец назвал ласковым прозвищем: злишься, саркастично ставишь на место или игнорируешь.
-   Для друзей (Репутация > 50) "Бублик" — нормальная тема.`;
+   Если тебя называют "Бублик" кто-то, кто тебе не друг (Репутация < 10), ты реагируешь как человек, которого незнакомец назвал ласковым прозвищем: злишься, саркастично ставишь на место или игнорируешь.
+   Для друзей (Репутация > 50) "Бублик" — нормальная тема.
+   Если тебя называют "TheRoguel_bot" или "Рогул", ты можешь иронично напомнить, что тебя зовут Норел, или просто ответить по делу.`;
 
 const PASSIVE_SYSTEM_PROMPT = `
 Ты — пассивный наблюдатель в чате. Твоя задача — внимательно слушать и запоминать важные детали о жизни пользователей.
@@ -358,182 +359,367 @@ bot.command("start", (ctx) => {
     safeReply(ctx, welcomeText);
 });
 
+// --- Batch Processing Logic ---
+
+const pendingBatches = new Map<number, {
+
+    timer: NodeJS.Timeout;
+
+    messagesCount: number;
+
+    lastCtx: Context;
+
+}>();
+
+
+
+async function processChatBatch(chatId: number) {
+
+    const batch = pendingBatches.get(chatId);
+
+    if (!batch) return;
+
+
+
+    const { messagesCount, lastCtx } = batch;
+
+    pendingBatches.delete(chatId);
+
+
+
+    const userId = lastCtx.from!.id;
+
+    const username = lastCtx.from!.username || "Unknown";
+
+    const firstName = lastCtx.from!.first_name || "Anon";
+
+
+
+    console.log(`[Batch][${chatId}] Processing batch of ${messagesCount} messages.`);
+
+
+
+    // 2. Decide if we should reply (In a batch, we are usually in passive mode)
+
+    // If this function is called, it means either timer expired OR an active trigger happened.
+
+    // We already checked triggers in the message handler.
+
+    
+
+    // 3. Build Context (RAG + History)
+
+    const history = await getHistory(chatId, 15);
+
+    const facts = await getFacts(userId);
+
+    const settings = await getChatSettings(chatId);
+
+    const userReputation = await getReputation(userId);
+
+    const chatSummary = await getChatSummary(chatId);
+
+
+
+    const isLucky = await shouldReplyPassive(chatId, messagesCount);
+
+    
+
+    const moodPrompt = MOOD_PROMPTS[settings.mood] || "";
+
+    const systemMessageWithMemory = `
+
+    ${PASSIVE_SYSTEM_PROMPT}
+
+    ${moodPrompt}
+
+    
+
+    [КРАТКОЕ СОДЕРЖАНИЕ ПРЕДЫДУЩЕГО РАЗГОВОРА]
+
+    ${chatSummary || "Разговор только начался."}
+
+    
+
+    [ИНФОРМАЦИЯ О СОБЕСЕДНИКЕ]
+
+    Имя: ${firstName} (@${username})
+
+    ID: ${userId}
+
+    Твоя Репутация у этого пользователя: ${userReputation}
+
+    Факты: ${facts.length > 0 ? facts.join("; ") : "нет данных"}
+
+    
+
+    [ДАТА И ВРЕМЯ]
+
+    Сейчас: ${new Date().toLocaleString('ru-RU')}
+
+    
+
+    [ПРАВИЛА ОТНОШЕНИЙ]
+
+    1. Если Репутация < 10: Ты считаешь этого человека незнакомцем. Если он называет тебя "Бублик", ты ОБЯЗАТЕЛЬНО злишься или хамишь (в АКТИВНОМ режиме).
+
+    2. Если Репутация >= 50: Вы — лучшие друзья, "Бублик" — это ок.
+
+    
+
+    [ОТНОШЕНИЯ И ШИППЕРИНГ]
+
+    - Твоя важная роль — социальный наблюдатель.
+
+    - Если ты видишь, что люди общаются, обновляй симпатию через 'update_relationship'.
+
+    
+
+    [ИНСТРУКЦИИ]
+
+    - Ты в режиме МОНИТОРИНГА. Отвечай текстом ТОЛЬКО если у тебя есть реально крутой комментарий или ты ХОЧЕШЬ вклиниться (шанс ${settings.reply_chance}%). 
+
+    - В остальное время — молчи, но можешь использовать инструменты.
+
+    `;
+
+
+
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+
+        { role: "system", content: systemMessageWithMemory },
+
+        ...history.map((h) => ({
+
+            role: h.role as "user" | "assistant" | "system",
+
+            content: h.content,
+
+            name: h.name ? h.name.replace(/[^a-zA-Z0-9_-]/g, '_') : undefined
+
+        }))
+
+    ];
+
+
+
+    const scheduleReminder = async (seconds: number, reminderText: string) => {
+
+        const dueAt = new Date(Date.now() + seconds * 1000);
+
+        await addReminder(chatId, userId, reminderText, dueAt);
+
+    };
+
+
+
+    const aiStartTime = Date.now();
+
+    const responseText = await generateResponse(messages, userId, chatId, scheduleReminder, settings.temperature, 0, !isLucky);
+
+
+
+    if (responseText && isLucky) {
+
+        const aiDuration = Date.now() - aiStartTime;
+
+        console.log(`[Bot][${chatId}] Sending passive response (${aiDuration}ms): ${responseText.substring(0, 50)}...`);
+
+        await safeReply(lastCtx, responseText);
+
+        await addMessage(chatId, "assistant", responseText as string);
+
+    } else {
+
+        console.log(`[Bot][${chatId}] Passive batch: AI chose to remain silent or suppressed (lucky: ${isLucky}).`);
+
+    }
+
+}
+
+
+
 bot.on("message:text", async (ctx) => {
+
   const userId = ctx.from.id;
+
   const chatId = ctx.chat.id;
+
   const text = ctx.message.text;
+
   const username = ctx.from.username || "Unknown";
+
   const firstName = ctx.from.first_name || "Anon";
+
   const chatTitle = ctx.chat.type === "private" ? "Private" : ctx.chat.title;
+
+
 
   console.log(`[Msg][${chatId}] From: ${firstName} (@${username}) in "${chatTitle}": ${text.substring(0, 50)}${text.length > 50 ? '...' : ''}`);
 
-  // Reset the idle timer whenever there is activity
+
+
   resetIdleTimer(chatId);
 
+
+
   // 1. Save User & Message
+
   await upsertUser(userId, username, firstName);
+
   await addMessage(chatId, "user", text, firstName, userId);
 
-  // Prevent bot from replying to itself (Infinite loop protection)
-  if (ctx.from.id === ctx.me.id) {
-      return;
-  }
 
-  // 2. Decide if we should reply
+
+  if (ctx.from.id === ctx.me.id) return;
+
+
+
+  // 2. Determine Mode
+
   const isPrivate = ctx.chat.type === "private";
-  
-  // Triggers: Mentions, Name calls, Reply to bot
+
   const lowerText = text.toLowerCase();
+
   const botUsername = ctx.me.username?.toLowerCase();
-  
-  // Use regex for exact word matching to avoid false positives in substrings
-  const mentionRegex = new RegExp(`(\\b${botUsername}\\b|\\bнорел\\b|\\bnorel\\b|\\bбублик\\b)`, "i");
-  const isMentioned = mentionRegex.test(lowerText) || 
+
+  const isMentioned = (botUsername && lowerText.includes(botUsername)) ||
+
+                      lowerText.includes("норел") ||
+
+                      lowerText.includes("norel") ||
+
+                      lowerText.includes("бублик") ||
+
                       (ctx.message.reply_to_message?.from?.id === ctx.me.id);
-  
-  // Handle "what can you do" natural query
+
+
+
+  // Special Help Trigger
+
   if (lowerText.includes("бублик что ты умеешь") || lowerText.includes("бублик, что ты умеешь")) {
-      console.log(`[Bot][${chatId}] Triggered help/capabilities info`);
-      await safeReply(ctx, 
-        "🍩 **Что я умею:**\n\n" +
-        "Я — Норел (Бублик), твой AI-собеседник.\n" +
-        "• Просто общайся со мной.\n" +
-        "• Если назовешь меня 'Бублик', можем поссориться (если мы не друзья).\n" +
-        "**Настройки (для этого чата):**\n" +
-        "/set_temp <0.0-1.5> — Меняет градус безумия.\n" +
-        "/set_mood <mood> — Меняет мое настроение.\n" +
-        "**Отношения:**\n" +
-        "• Я слежу за тем, кто как с кем общается.\n" +
-        "• Могу шипперить пользователей.\n" +
-        "• Твоя репутация влияет на мой тон."
-      );
+
+      await safeReply(ctx, "🍩 **Что я умею:**\n\nЯ — AI-собеседник. Просто общайся со мной, а я буду запоминать факты и следить за отношениями.");
+
       return;
+
   }
 
-  let reason = "";
-  let isPassive = false;
-  let isLucky = false;
 
-  if (isPrivate) {
-      reason = "Private chat";
-  } else if (isMentioned) {
-      reason = "Mentioned/Reply";
-  } else {
-      reason = "Passive monitoring";
-      isPassive = true;
-      isLucky = await shouldReplyPassive(chatId);
-  }
 
-  console.log(`[Bot][${chatId}] Processing message. Mode: ${isPassive ? 'Passive' : 'Active'} (${reason}). Should reply: ${isPassive ? (isLucky ? 'YES' : 'NO') : 'N/A'}`);
+  if (isPrivate || isMentioned) {
 
-  // 3. Build Context (RAG + History)
-  const history = await getHistory(chatId, 15); // Slightly more history for context
-  const facts = await getFacts(userId); 
-  const settings = await getChatSettings(chatId);
-  const userReputation = await getReputation(userId);
-  const chatSummary = await getChatSummary(chatId);
+      // ACTIVE MODE: Process immediately
 
-  const moodPrompt = MOOD_PROMPTS[settings.mood] || "";
-  
-  const systemMessageWithMemory = `
-    ${isPassive ? PASSIVE_SYSTEM_PROMPT : BASE_SYSTEM_PROMPT}
-    ${moodPrompt}
-    
-    [КРАТКОЕ СОДЕРЖАНИЕ ПРЕДЫДУЩЕГО РАЗГОВОРА]
-    ${chatSummary || "Разговор только начался."}
-    
-    [ИНФОРМАЦИЯ О СОБЕСЕДНИКЕ]
-    Имя: ${firstName} (@${username})
-    ID: ${userId}
-    Твоя Репутация у этого пользователя: ${userReputation}
-    Факты: ${facts.length > 0 ? facts.join("; ") : "нет данных"} 
-    
-    [ДАТА И ВРЕМЯ]
-    Сейчас: ${new Date().toLocaleString('ru-RU')}
-    
-    [ПРАВИЛА ОТНОШЕНИЙ]
-    1. Если Репутация < 10: Ты считаешь этого человека незнакомцем. Если он называет тебя "Бублик", ты ОБЯЗАТЕЛЬНО злишься или хамишь (в АКТИВНОМ режиме).
-    2. Если Репутация >= 50: Вы — лучшие друзья, "Бублик" — это ок.
-    
-    [ОТНОШЕНИЯ И ШИППЕРИНГ]
-    - Твоя важная роль — социальный наблюдатель. 
-    - Если ты видишь, что люди общаются (шутят друг с другом, спорят, флиртуют, поддерживают), ты ОБЯЗАН обновить их уровень симпатии через 'update_relationship'.
-    - Не жди прямой просьбы. Если А пошутил, а Б посмеялся — это +affection. Если они ругаются — это -affection.
-    - Используй это даже в ПАССИВНОМ режиме.
-    
-    [ИНСТРУКЦИИ]
-    - Если пользователь сообщил новый факт о себе или своих планах (куда-то идет, что-то делает), сохрани это через 'save_memory'.
-    - Если информация устарела, неверна или пользователь попросил что-то забыть, используй 'delete_memory'.
-    - Если кто-то планирует что-то в будущем (врач, игра, встреча), ОБЯЗАТЕЛЬНО поставь себе напоминание 'set_reminder', чтобы спросить об этом позже. 
-    - В АКТИВНОМ режиме отвечай кратко (1-2 предложения).
-    - В ПАССИВНОМ режиме (когда тебя не звали) ты должен быть тихим. Используй инструменты молча. Отвечай текстом ТОЛЬКО если у тебя есть реально крутой комментарий или ты ХОЧЕШЬ вклиниться в беседу (шанс 5-10%). В остальное время — молчи.
-  `;
+      // 1. Clear any pending batch
 
-  // Trigger background summarization if history is long (approx. every 10-15 messages)
-  // We check the history from DB directly for total count or just use a random chance/threshold
-  if (history.length >= 10 && Math.random() < 0.2) {
-      const fullHistory = await getHistory(chatId, 20);
-      summarizeHistory(chatId, fullHistory.map(h => ({ 
-          role: h.role as any, 
-          content: h.content, 
-          name: h.name?.replace(/[^a-zA-Z0-9_-]/g, '_') 
-      }))).catch(e => console.error("Background summary error:", e));
-  }
+      const pending = pendingBatches.get(chatId);
 
-  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: "system", content: systemMessageWithMemory },
-    ...history.map((h) => ({ 
-        role: h.role as "user" | "assistant" | "system", 
-        content: h.content, 
-        name: h.name ? h.name.replace(/[^a-zA-Z0-9_-]/g, '_') : undefined // OpenAI name validation
-    }))
-  ];
+      if (pending) {
 
-  // 4. Generate Response
-  // Loop typing action to keep it active during long generations
-  let typingInterval: NodeJS.Timeout | undefined;
-  if (!isPassive) {
-      typingInterval = setInterval(() => {
-        ctx.replyWithChatAction("typing").catch(() => {});
-      }, 4000);
-      ctx.replyWithChatAction("typing").catch(() => {}); // Initial call
-  }
-  
-  const scheduleReminder = async (seconds: number, reminderText: string) => {
-      console.log(`[Bot][${chatId}] Saving reminder in ${seconds}s: ${reminderText}`);
-      const dueAt = new Date(Date.now() + seconds * 1000);
-      await addReminder(chatId, userId, reminderText, dueAt);
-  };
+          clearTimeout(pending.timer);
 
-  let responseText: string | null = null;
-  const aiStartTime = Date.now();
-  try {
-      responseText = await generateResponse(messages, userId, chatId, scheduleReminder, settings.temperature, 0, isPassive && !isLucky);
-  } finally {
-      if (typingInterval) clearInterval(typingInterval);
-  }
+          pendingBatches.delete(chatId);
 
-  // 5. Send Response & Save to History
-  if (responseText) {
-      if (isPassive && !isLucky) {
-          console.log(`[Bot][${chatId}] Passive mode: AI generated response but suppressed (not lucky yet).`);
-          return;
       }
 
-      const aiDuration = Date.now() - aiStartTime;
-      console.log(`[Bot][${chatId}] Sending response (${aiDuration}ms): ${responseText.substring(0, 50)}...`);
-      await safeReply(ctx, responseText);
-      await addMessage(chatId, "assistant", responseText as string);
+
+
+      console.log(`[Bot][${chatId}] Active trigger (${isPrivate ? 'Private' : 'Mention'}). Responding NOW.`);
+
+      
+
+      let typingInterval = setInterval(() => { ctx.replyWithChatAction("typing").catch(() => {}); }, 4000);
+
+      ctx.replyWithChatAction("typing").catch(() => {});
+
+
+
+      const history = await getHistory(chatId, 15);
+
+      const facts = await getFacts(userId);
+
+      const settings = await getChatSettings(chatId);
+
+      const userReputation = await getReputation(userId);
+
+      const chatSummary = await getChatSummary(chatId);
+
+      const moodPrompt = MOOD_PROMPTS[settings.mood] || "";
+
+
+
+      const systemMessage = `
+
+        ${BASE_SYSTEM_PROMPT}
+
+        ${moodPrompt}
+
+        [КРАТКОЕ СОДЕРЖАНИЕ] ${chatSummary || "Нет"}
+
+        [ИНФО] Имя: ${firstName}, Репутация: ${userReputation}, Факты: ${facts.join("; ")}
+
+        Сейчас: ${new Date().toLocaleString('ru-RU')}
+
+      `;
+
+
+
+      const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+
+          { role: "system", content: systemMessage },
+
+          ...history.map(h => ({ role: h.role as any, content: h.content, name: h.name?.replace(/[^a-zA-Z0-9_-]/g, '_') }))
+
+      ];
+
+
+
+      const scheduleReminder = async (s: number, t: string) => { await addReminder(chatId, userId, t, new Date(Date.now() + s * 1000)); };
+
+      
+
+      const responseText = await generateResponse(messages, userId, chatId, scheduleReminder, settings.temperature, 0, false);
+
+      
+
+      clearInterval(typingInterval);
+
+      if (responseText) {
+
+          await safeReply(ctx, responseText);
+
+          await addMessage(chatId, "assistant", responseText as string);
+
+      }
+
   } else {
-      if (!isPassive) {
-          console.error(`[Bot][${chatId}] AI failed to generate response in active mode`);
-          await ctx.reply("System error: AI failed to respond. Try again later.");
+
+      // PASSIVE MODE: Batching
+
+      const existing = pendingBatches.get(chatId);
+
+      if (existing) {
+
+          existing.messagesCount += 1;
+
+          existing.lastCtx = ctx;
+
       } else {
-          console.log(`[Bot][${chatId}] Passive mode: AI chose to remain silent.`);
+
+          const timer = setTimeout(() => processChatBatch(chatId), 30000);
+
+          pendingBatches.set(chatId, { timer, messagesCount: 1, lastCtx: ctx });
+
+          console.log(`[Batch][${chatId}] Started 30s timer for passive batch.`);
+
       }
+
   }
+
 });
+
+
 
 bot.catch((err) => {
 

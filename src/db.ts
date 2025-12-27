@@ -243,9 +243,8 @@ export async function getChatSettings(chatId: number): Promise<{ temperature: nu
 /**
  * Increments the message counter for a chat.
  * Returns true if the bot should reply based on the accumulated "tension".
- * This is more deterministic than pure random.
  */
-export async function shouldReplyPassive(chatId: number): Promise<boolean> {
+export async function shouldReplyPassive(chatId: number, increment: number = 1): Promise<boolean> {
     const repo = AppDataSource.getRepository(ChatSettings);
     const chatIdStr = chatId.toString();
     let settings = await repo.findOneBy({ chat_id: chatIdStr });
@@ -254,13 +253,14 @@ export async function shouldReplyPassive(chatId: number): Promise<boolean> {
         settings = repo.create({ chat_id: chatIdStr, reply_chance: 10, message_counter: 0 });
     }
 
-    settings.message_counter += 1;
+    settings.message_counter += increment;
     
     const threshold = 100 / (settings.reply_chance || 1);
     console.log(`[Chat][${chatIdStr}] Counter: ${settings.message_counter}/${threshold.toFixed(1)} (Chance: ${settings.reply_chance}%)`);
     
     if (settings.message_counter >= threshold) {
-        settings.message_counter = 0;
+        // Reset counter but keep the overflow if any
+        settings.message_counter = Math.max(0, settings.message_counter - threshold);
         await repo.save(settings);
         return true;
     }
