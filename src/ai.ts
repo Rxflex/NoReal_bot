@@ -346,11 +346,11 @@ export async function generateResponse(
         }
 
         const toolDuration = Date.now() - toolStartTime;
-        console.log(`[AI][${chatId}] Tool Finish: ${fnName} in ${toolDuration}ms`);
+        console.log(`[AI][${chatId}] Tool Finish: ${rawFnName} in ${toolDuration}ms`);
 
         // Truncate results if they are too long to prevent context overflow
         if (result.length > 10000) {
-            console.log(`[AI][${chatId}] Truncating tool result for ${fnName} (${result.length} chars)`);
+            console.log(`[AI][${chatId}] Truncating tool result for ${rawFnName} (${result.length} chars)`);
             result = result.substring(0, 10000) + "... [truncated]";
         }
 
