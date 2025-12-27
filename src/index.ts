@@ -90,9 +90,24 @@ async function checkReminders() {
         for (const rem of pending) {
             console.log(`[Reminder] Sending reminder ${rem.id} to chat ${rem.chat_id}`);
             const user = await getUser(parseInt(rem.user_id));
-            const userName = user?.first_name || "друг";
             
-            const text = `⏰ **Напоминалка для ${userName}**\n\n${rem.text}`;
+            // Clean up name: handle emojis or empty names
+            let userName = user?.first_name || "друг";
+            if (userName.includes("??") || userName.length < 2) {
+                userName = user?.username ? `@${user.username}` : "друг";
+            }
+            
+            // More natural phrasing - no more robotic "Напоминалка для"
+            const phrases = [
+                `Слушай, ${userName}, ты просил напомнить:`,
+                `Йо, ${userName}, не забудь:`,
+                `${userName}, ты вроде хотел:`,
+                `Кстати, ${userName}, ты упоминал:`,
+                `${userName}, привет! Как там:`
+            ];
+            const greeting = phrases[Math.floor(Math.random() * phrases.length)];
+            
+            const text = `⏰ **${greeting}**\n\n${rem.text}`;
             await safeSendMessage(rem.chat_id, text);
             await markReminderSent(rem.id);
             await addMessage(parseInt(rem.chat_id), "assistant", `[Напоминание]: ${rem.text}`);
@@ -370,10 +385,10 @@ bot.on("message:text", async (ctx) => {
   // Triggers: Mentions, Name calls, Reply to bot
   const lowerText = text.toLowerCase();
   const botUsername = ctx.me.username?.toLowerCase();
-  const isMentioned = (botUsername && lowerText.includes(botUsername)) || 
-                      lowerText.includes("норел") || 
-                      lowerText.includes("norel") || 
-                      lowerText.includes("бублик") || 
+  
+  // Use regex for exact word matching to avoid false positives in substrings
+  const mentionRegex = new RegExp(`(\\b${botUsername}\\b|\\bнорел\\b|\\bnorel\\b|\\bбублик\\b)`, "i");
+  const isMentioned = mentionRegex.test(lowerText) || 
                       (ctx.message.reply_to_message?.from?.id === ctx.me.id);
   
   // Handle "what can you do" natural query
@@ -490,7 +505,7 @@ bot.on("message:text", async (ctx) => {
   let responseText: string | null = null;
   const aiStartTime = Date.now();
   try {
-      responseText = await generateResponse(messages, userId, chatId, scheduleReminder, settings.temperature);
+      responseText = await generateResponse(messages, userId, chatId, scheduleReminder, settings.temperature, 0, isPassive && !isLucky);
   } finally {
       if (typingInterval) clearInterval(typingInterval);
   }

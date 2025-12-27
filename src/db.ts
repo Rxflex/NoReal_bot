@@ -256,10 +256,8 @@ export async function shouldReplyPassive(chatId: number): Promise<boolean> {
 
     settings.message_counter += 1;
     
-    // Threshold is 100 / chance. e.g. 10% chance -> every 10 messages.
-    // We add a tiny bit of jitter to avoid it being TOO predictable, 
-    // but the core is the counter.
     const threshold = 100 / (settings.reply_chance || 1);
+    console.log(`[Chat][${chatIdStr}] Counter: ${settings.message_counter}/${threshold.toFixed(1)} (Chance: ${settings.reply_chance}%)`);
     
     if (settings.message_counter >= threshold) {
         settings.message_counter = 0;
@@ -415,9 +413,27 @@ export async function getUser(userId: number): Promise<User | null> {
 
 export async function addReminder(chatId: number, userId: number, text: string, dueAt: Date) {
     const repo = AppDataSource.getRepository(Reminder);
+    const chatIdStr = chatId.toString();
+    const userIdStr = userId.toString();
+
+    // Check if ANY unsent reminder already exists for this user in this chat
+    // to prevent spamming reminders for the same person.
+    const activeReminder = await repo.findOne({
+        where: {
+            chat_id: chatIdStr,
+            user_id: userIdStr,
+            is_sent: false
+        }
+    });
+
+    if (activeReminder) {
+        console.log(`[DB] Active reminder already exists for user ${userIdStr} in chat ${chatIdStr}. Skipping.`);
+        return;
+    }
+
     await repo.save({
-        chat_id: chatId.toString(),
-        user_id: userId.toString(),
+        chat_id: chatIdStr,
+        user_id: userIdStr,
         text: text,
         due_at: dueAt,
         is_sent: false

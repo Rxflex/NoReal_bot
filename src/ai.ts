@@ -69,12 +69,12 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "set_reminder",
-      description: "Set a reminder for the user. Calculate the delay in seconds based on their request (e.g. 'in 1 hour' = 3600).",
+      description: "Set a reminder for the user. Only use this for REALLY important things. IMPORTANT: 'text' must be the ACTUAL natural message to the user (e.g., 'Йо, как прошел поход в магазин?'), NOT a description of a task.",
       parameters: {
         type: "object",
         properties: {
           seconds: { type: "number", description: "Delay in seconds." },
-          text: { type: "string", description: "The reminder message to send." },
+          text: { type: "string", description: "The message to send (casual, friendly, 1-2 sentences)." },
         },
         required: ["seconds", "text"],
       },
@@ -179,12 +179,28 @@ export async function generateResponse(
   chatId: number,
   onReminder?: (seconds: number, text: string) => Promise<void>,
   temperature: number = 0.7,
-  depth: number = 0
+  depth: number = 0,
+  background: boolean = false
 ) {
   const startTime = Date.now();
   if (depth > 5) {
       console.warn(`[AI][${chatId}] Max recursion depth reached.`);
       return "Уф, я немного запутался. Давай попробуем еще раз.";
+  }
+
+  // If in background mode, add a stealth instruction to the system prompt
+  if (background && depth === 0) {
+      const stealthPrompt = `
+        [STEALTH MODE]
+        You are monitoring the chat silently. 
+        DO NOT respond with text unless it is absolutely critical.
+        Use tools (save_memory, set_reminder, update_relationship) only if you see something new and important.
+        If there is nothing important to do, return an empty response or just use tools and then stay silent.
+      `;
+      const systemMsg = messages.find(m => m.role === 'system');
+      if (systemMsg) {
+          systemMsg.content += stealthPrompt;
+      }
   }
 
   // --- Context Management: Truncate messages if they are too long ---
@@ -362,7 +378,7 @@ export async function generateResponse(
       }
 
       // Recursively call for the final answer after tool outputs
-      return await generateResponse(messages, userId, chatId, onReminder, temperature, depth + 1);
+      return await generateResponse(messages, userId, chatId, onReminder, temperature, depth + 1, background);
     }
 
     return content || message.content;
