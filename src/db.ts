@@ -41,8 +41,8 @@ async function initDB() {
         await db.execute(`
             CREATE TABLE IF NOT EXISTS users (
                 id BIGINT PRIMARY KEY,
-                username TEXT,
-                first_name TEXT
+                username VARCHAR(255),
+                first_name VARCHAR(255)
             )
         `);
 
@@ -60,7 +60,7 @@ async function initDB() {
             CREATE TABLE IF NOT EXISTS history (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 chat_id BIGINT,
-                role TEXT,
+                role VARCHAR(50),
                 content TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
@@ -70,7 +70,7 @@ async function initDB() {
             CREATE TABLE IF NOT EXISTS chat_settings (
                 chat_id BIGINT PRIMARY KEY,
                 temperature FLOAT DEFAULT 0.7,
-                mood TEXT DEFAULT 'neutral'
+                mood VARCHAR(50) DEFAULT 'neutral'
             )
         `);
 
