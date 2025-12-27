@@ -14,6 +14,7 @@
     "typescript": "^5.3.3"
   },
   "dependencies": {
+    "@grammyjs/runner": "^2.0.3",
     "grammy": "^1.38.4",
     "mysql2": "^3.9.0",
     "openai": "^4.28.0",

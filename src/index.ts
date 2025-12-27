@@ -1,5 +1,6 @@
 import "reflect-metadata";
 import { Bot, Context } from "grammy";
+import { run } from "@grammyjs/runner";
 import { upsertUser, addMessage, getHistory, getFacts, upsertChatSettings, getChatSettings, getReputation, initDB, getChatSummary, getRelationships, getUser, addReminder, getPendingReminders, markReminderSent } from "./db";
 import { generateResponse, summarizeHistory } from "./ai";
 import OpenAI from "openai";
@@ -510,7 +511,7 @@ console.log("Bot is starting...");
 
 initDB().then(() => {
 
-    bot.start();
+    run(bot);
 
     console.log("Bot is running!");
 

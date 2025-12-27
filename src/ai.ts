@@ -216,7 +216,7 @@ export async function generateResponse(
     console.log(`[AI][${chatId}] Sending request (Messages: ${messages.length}, Size: ${totalChars} chars, Depth: ${depth})`);
     
     const response = await client.chat.completions.create({
-      model: "meta/llama-3.1-70b-instruct",
+      model: "qwen/qwen3-next-80b-a3b-thinking",
       messages: messages,
       tools: tools,
       tool_choice: "auto",
