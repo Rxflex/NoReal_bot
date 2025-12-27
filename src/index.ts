@@ -230,7 +230,11 @@ bot.on("message:text", async (ctx) => {
   ];
 
   // 4. Generate Response
-  await ctx.replyWithChatAction("typing");
+  // Loop typing action to keep it active during long generations
+  const typingInterval = setInterval(() => {
+    ctx.replyWithChatAction("typing").catch(() => {});
+  }, 4000);
+  ctx.replyWithChatAction("typing").catch(() => {}); // Initial call
   
   const scheduleReminder = (seconds: number, reminderText: string) => {
       console.log(`[Reminder] Scheduled in ${seconds}s: ${reminderText}`);
@@ -240,7 +244,12 @@ bot.on("message:text", async (ctx) => {
       }, seconds * 1000);
   };
 
-  const responseText = await generateResponse(messages, userId, scheduleReminder, settings.temperature);
+  let responseText: string | null = null;
+  try {
+      responseText = await generateResponse(messages, userId, scheduleReminder, settings.temperature);
+  } finally {
+      clearInterval(typingInterval);
+  }
 
   // 5. Send Response & Save to History
   if (responseText) {

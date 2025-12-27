@@ -38,12 +38,14 @@ async function initDB() {
         }
 
         // Init Tables (MySQL Syntax)
+        const tableOptions = "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci";
+        
         await db.execute(`
             CREATE TABLE IF NOT EXISTS users (
                 id BIGINT PRIMARY KEY,
                 username VARCHAR(255),
                 first_name VARCHAR(255)
-            )
+            ) ${tableOptions}
         `);
 
         await db.execute(`
@@ -53,7 +55,7 @@ async function initDB() {
                 fact TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(user_id) REFERENCES users(id)
-            )
+            ) ${tableOptions}
         `);
 
         await db.execute(`
@@ -63,7 +65,7 @@ async function initDB() {
                 role VARCHAR(50),
                 content TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
+            ) ${tableOptions}
         `);
 
         await db.execute(`
@@ -71,7 +73,7 @@ async function initDB() {
                 chat_id BIGINT PRIMARY KEY,
                 temperature FLOAT DEFAULT 0.7,
                 mood VARCHAR(50) DEFAULT 'neutral'
-            )
+            ) ${tableOptions}
         `);
 
     } else {
