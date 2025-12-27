@@ -43,6 +43,45 @@ const MOOD_PROMPTS: Record<string, string> = {
     "sad": "Ты грустный, депрессивный."
 };
 
+// --- Helpers ---
+
+/**
+ * Sends a message with Markdown if it contains markdown characters, 
+ * and falls back to plain text if parsing fails.
+ */
+async function safeReply(ctx: any, text: string, extra: any = {}) {
+    const hasMarkdown = /[*_`\[]/.test(text);
+    
+    if (!hasMarkdown) {
+        return await ctx.reply(text, extra);
+    }
+
+    try {
+        return await ctx.reply(text, { ...extra, parse_mode: "Markdown" });
+    } catch (e) {
+        console.error(`[Bot] Markdown parsing failed for message, falling back to plain text. Error:`, (e as any).message);
+        return await ctx.reply(text, extra);
+    }
+}
+
+/**
+ * Similar to safeReply but for bot.api.sendMessage
+ */
+async function safeSendMessage(chatId: string | number, text: string, extra: any = {}) {
+    const hasMarkdown = /[*_`\[]/.test(text);
+    
+    if (!hasMarkdown) {
+        return await bot.api.sendMessage(chatId, text, extra);
+    }
+
+    try {
+        return await bot.api.sendMessage(chatId, text, { ...extra, parse_mode: "Markdown" });
+    } catch (e) {
+        console.error(`[Bot] Markdown parsing failed for sendMessage, falling back to plain text. Error:`, (e as any).message);
+        return await bot.api.sendMessage(chatId, text, extra);
+    }
+}
+
 // --- Reminder Checker ---
 async function checkReminders() {
     try {
@@ -52,7 +91,8 @@ async function checkReminders() {
             const user = await getUser(parseInt(rem.user_id));
             const userName = user?.first_name || "друг";
             
-            await bot.api.sendMessage(rem.chat_id, `⏰ **Напоминалка для ${userName}**\n\n${rem.text}`, { parse_mode: "Markdown" });
+            const text = `⏰ **Напоминалка для ${userName}**\n\n${rem.text}`;
+            await safeSendMessage(rem.chat_id, text);
             await markReminderSent(rem.id);
             await addMessage(parseInt(rem.chat_id), "assistant", `[Напоминание]: ${rem.text}`);
         }
@@ -66,7 +106,7 @@ setInterval(checkReminders, 30000); // Check every 30 seconds
 // --- Commands ---
 
 bot.command("help", (ctx) => {
-    ctx.reply(
+    safeReply(ctx, 
         "🍩 **Что я умею:**\n\n" +
         "Я — Норел (Бублик), твой AI-собеседник.\n" +
         "• Просто общайся со мной.\n" +
@@ -74,11 +114,11 @@ bot.command("help", (ctx) => {
         "• Настройки: /settings.\n" +
         "• Твоя статистика: /me.\n" +
         "• Отношения в чате: /rel."
-    , { parse_mode: "Markdown" });
+    );
 });
 
 bot.command("commands", (ctx) => {
-    ctx.reply(
+    safeReply(ctx, 
         "📜 **Список команд:**\n\n" +
         "👤 **Пользователь:**\n" +
         "/me — Твоя репутация и факты о тебе.\n" +
@@ -90,17 +130,17 @@ bot.command("commands", (ctx) => {
         "🆘 **Помощь:**\n" +
         "/help — Краткая справка.\n" +
         "/start — Перезапуск и описание."
-    , { parse_mode: "Markdown" });
+    );
 });
 
 bot.command("settings", async (ctx) => {
     const settings = await getChatSettings(ctx.chat.id);
-    ctx.reply(
+    safeReply(ctx, 
         "⚙️ **Настройки чата:**\n\n" +
         `🌡 **Температура:** ${settings.temperature}\n` +
         `🎭 **Настроение:** ${settings.mood}\n\n` +
         "Изменить: /set_temp или /set_mood"
-    , { parse_mode: "Markdown" });
+    );
 });
 
 bot.command("me", async (ctx) => {
@@ -126,7 +166,7 @@ bot.command("me", async (ctx) => {
         text += `\n🧠 Я пока ничего о тебе не запомнил.`;
     }
 
-    ctx.reply(text, { parse_mode: "Markdown" });
+    safeReply(ctx, text);
 });
 
 bot.command("rel", async (ctx) => {
@@ -178,7 +218,7 @@ bot.command("rel", async (ctx) => {
         text += `${name1} ${heart} ${name2}: ${rel.affection}% ${rel.status ? `(${rel.status})` : ""}\n`;
     }
 
-    ctx.reply(text, { parse_mode: "Markdown" });
+    safeReply(ctx, text);
 });
 
 bot.command("set_temp", async (ctx) => {
@@ -282,7 +322,7 @@ bot.command("start", (ctx) => {
         "• Скидываю мемы и картинки.\n\n" +
         "Если забудешь — пиши `/help`. Погнали? 🚀";
 
-    ctx.reply(welcomeText, { parse_mode: "Markdown" });
+    safeReply(ctx, welcomeText);
 });
 
 bot.on("message:text", async (ctx) => {
@@ -322,7 +362,7 @@ bot.on("message:text", async (ctx) => {
   // Handle "what can you do" natural query
   if (lowerText.includes("бублик что ты умеешь") || lowerText.includes("бублик, что ты умеешь")) {
       console.log(`[Bot][${chatId}] Triggered help/capabilities info`);
-      await ctx.reply(
+      await safeReply(ctx, 
         "🍩 **Что я умею:**\n\n" +
         "Я — Норел (Бублик), твой AI-собеседник.\n" +
         "• Просто общайся со мной.\n" +
@@ -334,7 +374,7 @@ bot.on("message:text", async (ctx) => {
         "• Я слежу за тем, кто как с кем общается.\n" +
         "• Могу шипперить пользователей.\n" +
         "• Твоя репутация влияет на мой тон."
-      , { parse_mode: "Markdown" });
+      );
       return;
   }
 
@@ -446,12 +486,7 @@ bot.on("message:text", async (ctx) => {
 
       const aiDuration = Date.now() - aiStartTime;
       console.log(`[Bot][${chatId}] Sending response (${aiDuration}ms): ${responseText.substring(0, 50)}...`);
-      try {
-        await ctx.reply(responseText, { parse_mode: "Markdown" });
-      } catch (e) {
-        console.error(`[Bot][${chatId}] Markdown failed, falling back to text`);
-        await ctx.reply(responseText);
-      }
+      await safeReply(ctx, responseText);
       await addMessage(chatId, "assistant", responseText as string);
   } else {
       if (!isPassive) {
