@@ -48,7 +48,7 @@ bot.command("help", (ctx) => {
     , { parse_mode: "Markdown" });
 });
 
-bot.command("set_temp", (ctx) => {
+bot.command("set_temp", async (ctx) => {
     const args = ctx.match;
     if (!args) return ctx.reply("Использование: /set_temp <0.1 - 1.5>");
     
@@ -57,12 +57,12 @@ bot.command("set_temp", (ctx) => {
         return ctx.reply("Укажи число от 0.0 до 2.0");
     }
 
-    const settings = getChatSettings(ctx.chat.id);
-    upsertChatSettings(ctx.chat.id, temp, settings.mood);
+    const settings = await getChatSettings(ctx.chat.id);
+    await upsertChatSettings(ctx.chat.id, temp, settings.mood);
     ctx.reply(`Температура установлена на ${temp}.`);
 });
 
-bot.command("set_mood", (ctx) => {
+bot.command("set_mood", async (ctx) => {
     const args = ctx.match;
     if (!args) return ctx.reply("Использование: /set_mood <mood>\nДоступно: neutral, playful, flirty, angry, toxic, sad");
 
@@ -71,8 +71,8 @@ bot.command("set_mood", (ctx) => {
         return ctx.reply("Такого настроения я не знаю. Доступно: neutral, playful, flirty, angry, toxic, sad");
     }
 
-    const settings = getChatSettings(ctx.chat.id);
-    upsertChatSettings(ctx.chat.id, settings.temperature, mood);
+    const settings = await getChatSettings(ctx.chat.id);
+    await upsertChatSettings(ctx.chat.id, settings.temperature, mood);
     ctx.reply(`Настроение изменено на: ${mood}`);
 });
 
@@ -95,10 +95,10 @@ function resetIdleTimer(chatId: number) {
     try {
         console.log(`[Idle] Waking up in chat ${chatId}`);
         // Generate a spontaneous message
-        const settings = getChatSettings(chatId);
+        const settings = await getChatSettings(chatId);
         const moodPrompt = MOOD_PROMPTS[settings.mood] || "";
 
-        const history = getHistory(chatId, 5);
+        const history = await getHistory(chatId, 5);
         const systemMessage = `
           ${BASE_SYSTEM_PROMPT}
           ${moodPrompt}
@@ -119,7 +119,7 @@ function resetIdleTimer(chatId: number) {
 
         if (responseText) {
             await bot.api.sendMessage(chatId, responseText as string);
-            addMessage(chatId, "assistant", responseText as string);
+            await addMessage(chatId, "assistant", responseText as string);
         }
     } catch (e) {
         console.error(`[Idle] Error in chat ${chatId}`, e);
@@ -163,8 +163,8 @@ bot.on("message:text", async (ctx) => {
   resetIdleTimer(chatId);
 
   // 1. Save User & Message
-  upsertUser(userId, username, firstName);
-  addMessage(chatId, "user", text);
+  await upsertUser(userId, username, firstName);
+  await addMessage(chatId, "user", text);
 
   // Prevent bot from replying to itself (Infinite loop protection)
   if (ctx.from.id === ctx.me.id) {
@@ -204,9 +204,9 @@ bot.on("message:text", async (ctx) => {
   }
 
   // 3. Build Context (RAG + History)
-  const history = getHistory(chatId, 10); // Last 10 messages
-  const facts = getFacts(userId); // Retrieved memories
-  const settings = getChatSettings(chatId);
+  const history = await getHistory(chatId, 10); // Last 10 messages
+  const facts = await getFacts(userId); // Retrieved memories
+  const settings = await getChatSettings(chatId);
   const moodPrompt = MOOD_PROMPTS[settings.mood] || "";
   
   const systemMessageWithMemory = `
@@ -250,7 +250,7 @@ bot.on("message:text", async (ctx) => {
         console.error("Failed to send markdown, falling back to text:", e);
         await ctx.reply(responseText); // Fallback if markdown is broken
       }
-      addMessage(chatId, "assistant", responseText as string);
+      await addMessage(chatId, "assistant", responseText as string);
   } else {
       await ctx.reply("System error: 502 Bad Gateway (AI Server is down or rejecting requests). Try again later.");
   }
