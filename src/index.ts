@@ -312,11 +312,12 @@ bot.on("message:text", async (ctx) => {
   
   // Triggers: Mentions, Name calls, Reply to bot
   const lowerText = text.toLowerCase();
-  const isMentioned = lowerText.includes("theroguel_bot") || 
+  const botUsername = ctx.me.username?.toLowerCase();
+  const isMentioned = (botUsername && lowerText.includes(botUsername)) || 
                       lowerText.includes("норел") || 
                       lowerText.includes("norel") || 
                       lowerText.includes("бублик") || 
-                      (ctx.message.reply_to_message?.from?.id === bot.botInfo.id);
+                      (ctx.message.reply_to_message?.from?.id === ctx.me.id);
   
   // Handle "what can you do" natural query
   if (lowerText.includes("бублик что ты умеешь") || lowerText.includes("бублик, что ты умеешь")) {
@@ -337,7 +338,7 @@ bot.on("message:text", async (ctx) => {
       return;
   }
 
-  const randomChance = Math.random() < 0.10; // 10% chance to reply spontaneously in groups
+  const randomChance = Math.random() < 0.08; // 8% chance to reply spontaneously in groups
   let reason = "";
   let isPassive = false;
 
@@ -350,7 +351,7 @@ bot.on("message:text", async (ctx) => {
       isPassive = true;
   }
 
-  console.log(`[Bot][${chatId}] Processing message. Mode: ${isPassive ? 'Passive' : 'Active'} (${reason})`);
+  console.log(`[Bot][${chatId}] Processing message. Mode: ${isPassive ? 'Passive' : 'Active'} (${reason}). Chance to reply: ${isPassive ? (randomChance ? 'YES' : 'NO') : 'N/A'}`);
 
   // 3. Build Context (RAG + History)
   const history = await getHistory(chatId, 15); // Slightly more history for context
@@ -386,6 +387,7 @@ bot.on("message:text", async (ctx) => {
     
     [ИНСТРУКЦИИ]
     - Если пользователь сообщил новый факт о себе или своих планах (куда-то идет, что-то делает), сохрани это через 'save_memory'.
+    - Если информация устарела, неверна или пользователь попросил что-то забыть, используй 'delete_memory'.
     - Если кто-то планирует что-то в будущем (врач, игра, встреча), ОБЯЗАТЕЛЬНО поставь себе напоминание 'set_reminder', чтобы спросить об этом позже. 
     - В АКТИВНОМ режиме отвечай кратко (1-2 предложения).
     - В ПАССИВНОМ режиме (когда тебя не звали) ты должен быть тихим. Используй инструменты молча. Отвечай текстом ТОЛЬКО если у тебя есть реально крутой комментарий или ты ХОЧЕШЬ вклиниться в беседу (шанс 5-10%). В остальное время — молчи.
@@ -437,6 +439,11 @@ bot.on("message:text", async (ctx) => {
 
   // 5. Send Response & Save to History
   if (responseText) {
+      if (isPassive && !randomChance) {
+          console.log(`[Bot][${chatId}] Passive mode: AI generated response but suppressed by random chance.`);
+          return;
+      }
+
       const aiDuration = Date.now() - aiStartTime;
       console.log(`[Bot][${chatId}] Sending response (${aiDuration}ms): ${responseText.substring(0, 50)}...`);
       try {

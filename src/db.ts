@@ -249,6 +249,15 @@ export async function getFacts(userId: number): Promise<string[]> {
     return facts.map(f => f.fact);
 }
 
+export async function deleteFact(userId: number, factText: string) {
+    const repo = AppDataSource.getRepository(Fact);
+    // Find exact match or similar
+    await repo.delete({
+        user_id: userId.toString(),
+        fact: factText
+    });
+}
+
 export async function addMessage(chatId: number, role: 'user' | 'assistant' | 'system', content: string, name?: string, userId?: number) {
     const repo = AppDataSource.getRepository(History);
     await repo.save({

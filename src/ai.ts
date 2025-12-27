@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { searchWeb, getFunnyImage } from "./tools";
-import { addFact, changeReputation, updateRelationship, getRelationships, getAllUsersInChat, getUser, updateChatSummary } from "./db";
+import { addFact, deleteFact, changeReputation, updateRelationship, getRelationships, getAllUsersInChat, getUser, updateChatSummary } from "./db";
 
 const client = new OpenAI({
   baseURL: process.env.OPENAI_BASE_URL || "http://localhost:1234/v1",
@@ -77,6 +77,20 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           text: { type: "string", description: "The reminder message to send." },
         },
         required: ["seconds", "text"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_memory",
+      description: "Delete a specific fact about the user from memory. Use this if the information is outdated, incorrect, or the user asks to forget it.",
+      parameters: {
+        type: "object",
+        properties: {
+          fact: { type: "string", description: "The exact fact to delete (as it was saved)." },
+        },
+        required: ["fact"],
       },
     },
   },
@@ -267,6 +281,9 @@ export async function generateResponse(
         } else if (fnName === "save_memory") {
           addFact(userId, args.fact || args.memory || args.text);
           result = `Memory saved: ${args.fact || args.memory || args.text}`;
+        } else if (fnName === "delete_memory") {
+          await deleteFact(userId, args.fact || args.memory || args.text);
+          result = `Memory deleted: ${args.fact || args.memory || args.text}`;
         } else if (fnName === "set_reminder") {
           const seconds = args.seconds || args.time || args.delay;
           const text = args.text || args.message || args.reminder;
