@@ -219,9 +219,15 @@ export async function addMessage(chatId: number, role: 'user' | 'assistant' | 's
 }
 
 export async function getHistory(chatId: number, limit: number = 10): Promise<{ role: string, content: string }[]> {
-    const sql = `SELECT role, content FROM history WHERE chat_id = ? ORDER BY id DESC LIMIT ?`;
-    // Note: limit in MySQL is integer, params work fine.
-    // However, SQLite LIMIT ? works too.
-    const results = await runQuery(sql, [chatId, limit]) as { role: string, content: string }[];
-    return results.reverse(); // Return in chronological order
+    if (isMysql) {
+        // MySQL PREPARED statements do not support ? in LIMIT in some versions/configurations or driver wrappers.
+        // Safe to inject number directly as it is strongly typed as number.
+        const sql = `SELECT role, content FROM history WHERE chat_id = ? ORDER BY id DESC LIMIT ${Number(limit)}`;
+        const results = await runQuery(sql, [chatId]) as { role: string, content: string }[];
+        return results.reverse();
+    } else {
+        const sql = `SELECT role, content FROM history WHERE chat_id = ? ORDER BY id DESC LIMIT ?`;
+        const results = await runQuery(sql, [chatId, limit]) as { role: string, content: string }[];
+        return results.reverse(); 
+    }
 }
