@@ -278,13 +278,21 @@ export async function generateResponse(
           }
         } else if (fnName === "change_user_reputation") {
             const targetId = parseInt(args.user_id);
-            await changeReputation(targetId, args.amount);
-            result = `Reputation of user ${targetId} changed by ${args.amount}. Reason: ${args.reason}`;
+            if (isNaN(targetId)) {
+                result = `Error: user_id must be a numeric string. Got: ${args.user_id}`;
+            } else {
+                await changeReputation(targetId, args.amount);
+                result = `Reputation of user ${targetId} changed by ${args.amount}. Reason: ${args.reason}`;
+            }
         } else if (fnName === "update_relationship") {
             const id1 = parseInt(args.user_id_1);
             const id2 = parseInt(args.user_id_2);
-            await updateRelationship(chatId, id1, id2, args.affection_delta, args.status);
-            result = `Relationship between ${id1} and ${id2} updated (delta: ${args.affection_delta}).`;
+            if (isNaN(id1) || isNaN(id2)) {
+                result = `Error: user_id_1 and user_id_2 must be numeric strings.`;
+            } else {
+                await updateRelationship(chatId, id1, id2, args.affection_delta, args.status);
+                result = `Relationship between ${id1} and ${id2} updated (delta: ${args.affection_delta}).`;
+            }
         } else if (fnName === "get_chat_info") {
             const users = await getAllUsersInChat(chatId);
             const rels = await getRelationships(chatId);

@@ -181,20 +181,28 @@ export async function initDB() {
 
 export async function upsertUser(id: number, username: string | undefined, first_name: string) {
     const repo = AppDataSource.getRepository(User);
-    const user = new User();
-    user.id = id.toString();
-    user.username = username || undefined; // undefined makes TypeORM skip/set null depending on config, but here manual assign is safer
-    user.first_name = first_name;
+    const userIdStr = id.toString();
     
-    // TypeORM upsert is handy
-    // We want to preserve reputation if it exists, so we just save.
-    // However, save() might overwrite reputation to default if we pass a new object without it?
-    // Let's use upsert with conflict paths.
+    // Check if user exists first to avoid resetting reputation
+    const existingUser = await repo.findOneBy({ id: userIdStr });
     
-    await repo.upsert(
-        { id: id.toString(), username: username, first_name: first_name },
-        ["id"]
-    );
+    if (existingUser) {
+        // Update only if changed
+        if (existingUser.username !== username || existingUser.first_name !== first_name) {
+            existingUser.username = username;
+            existingUser.first_name = first_name;
+            await repo.save(existingUser);
+        }
+    } else {
+        // Create new user
+        const newUser = repo.create({
+            id: userIdStr,
+            username: username,
+            first_name: first_name,
+            reputation: 0
+        });
+        await repo.save(newUser);
+    }
 }
 
 export async function changeReputation(userId: number, amount: number) {
