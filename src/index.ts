@@ -77,7 +77,7 @@ bot.command("set_mood", async (ctx) => {
 });
 
 // --- Idle Timer Logic ---
-const chatTimers = new Map<number, Timer>();
+const chatTimers = new Map<number, NodeJS.Timeout>();
 const IDLE_TIMEOUT_MIN = 1000 * 60 * 60 * 2; // 2 Hours minimum
 const IDLE_TIMEOUT_VAR = 1000 * 60 * 60 * 4; // + up to 4 Hours variance
 
