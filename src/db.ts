@@ -123,7 +123,7 @@ if (isMysql) {
 
     console.log(`[DB] Using SQLite at: ${DB_PATH}`);
     dataSourceConfig = {
-        type: "better-sqlite3",
+        type: "sqlite",
         database: DB_PATH,
         synchronize: true,
         logging: false,
