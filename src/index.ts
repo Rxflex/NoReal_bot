@@ -1,5 +1,6 @@
+import "reflect-metadata";
 import { Bot, Context } from "grammy";
-import { upsertUser, addMessage, getHistory, getFacts, upsertChatSettings, getChatSettings } from "./db";
+import { upsertUser, addMessage, getHistory, getFacts, upsertChatSettings, getChatSettings, getReputation, initDB } from "./db";
 import { generateResponse } from "./ai";
 import OpenAI from "openai";
 
@@ -115,7 +116,7 @@ function resetIdleTimer(chatId: number) {
             ...history.map((h) => ({ role: h.role as "user" | "assistant", content: h.content })),
         ];
 
-        const responseText = await generateResponse(messages, 0, undefined, settings.temperature);
+        const responseText = await generateResponse(messages, 0, chatId, undefined, settings.temperature);
 
         if (responseText) {
             await bot.api.sendMessage(chatId, responseText as string);
@@ -164,7 +165,7 @@ bot.on("message:text", async (ctx) => {
 
   // 1. Save User & Message
   await upsertUser(userId, username, firstName);
-  await addMessage(chatId, "user", text);
+  await addMessage(chatId, "user", text, firstName, userId);
 
   // Prevent bot from replying to itself (Infinite loop protection)
   if (ctx.from.id === ctx.me.id) {
@@ -188,11 +189,14 @@ bot.on("message:text", async (ctx) => {
         "🍩 **Что я умею:**\n\n" +
         "Я — Норел (Бублик), твой AI-собеседник.\n" +
         "• Просто общайся со мной.\n" +
-        "• Если назовешь меня 'Бублик', можем поссориться (если мы не друзья).\n\n" +
+        "• Если назовешь меня 'Бублик', можем поссориться (если мы не друзья).\n" +
         "**Настройки (для этого чата):**\n" +
-        "/set_temp <0.0-1.5> — Меняет градус безумия (температуру). Чем выше, тем более я непредсказуемый.\n" +
+        "/set_temp <0.0-1.5> — Меняет градус безумия.\n" +
         "/set_mood <mood> — Меняет мое настроение.\n" +
-        "Доступные настроения: neutral, playful, flirty, angry, toxic, sad."
+        "**Отношения:**\n" +
+        "• Я слежу за тем, кто как с кем общается.\n" +
+        "• Могу шипперить пользователей.\n" +
+        "• Твоя репутация влияет на мой тон."
       , { parse_mode: "Markdown" });
       return;
   }
@@ -204,29 +208,44 @@ bot.on("message:text", async (ctx) => {
   }
 
   // 3. Build Context (RAG + History)
-  const history = await getHistory(chatId, 10); // Last 10 messages
+  const history = await getHistory(chatId, 15); // Increased history
   const facts = await getFacts(userId); // Retrieved memories
   const settings = await getChatSettings(chatId);
+  const userReputation = await getReputation(userId);
+
   const moodPrompt = MOOD_PROMPTS[settings.mood] || "";
   
   const systemMessageWithMemory = `
     ${BASE_SYSTEM_PROMPT}
     ${moodPrompt}
     
-    [ИНФОРМАЦИЯ О СОБЕСЕДНИКЕ (${firstName} @${username})]
-    ${facts.length > 0 ? facts.join("\n") : "Пока ничего конкретного не знаешь."} 
+    [ИНФОРМАЦИЯ О СОБЕСЕДНИКЕ]
+    Имя: ${firstName} (@${username})
+    ID: ${userId}
+    Репутация: ${userReputation} (чем выше, тем ты дружелюбнее)
+    Факты: ${facts.length > 0 ? facts.join("; ") : "нет данных"} 
+    
+    [ОТНОШЕНИЯ И ШИППЕРИНГ]
+    - Ты следишь за взаимодействием людей в чате. 
+    - Если видишь, что кто-то мило общается или ссорится, используй 'update_relationship' (нужны ID обоих).
+    - Ты можешь 'шипперить' людей (сводить их, придумывать им названия пар), если считаешь это уместным и смешным.
+    - Используй 'get_chat_info', чтобы узнать, кто есть в чате и какие между ними отношения.
+    - Если репутация пользователя низкая (< 0), ты можешь быть более токсичным или игнорировать его просьбы. Если высокая (> 50), ты считаешь его бро/лучшим другом.
     
     [ИНСТРУКЦИИ]
-    - Если пользователь сообщил новый факт о себе (имя, город, хобби), сохрани это через 'save_memory'.
-    - Если просят напомнить о чем-то, используй 'set_reminder'.
-    - Если просят картинку/мем, используй 'get_funny_image'.
+    - Если пользователь сообщил новый факт о себе, сохрани это через 'save_memory'.
+    - Если репутация пользователя должна измениться (он тебя похвалил, оскорбил или сделал что-то крутое), используй 'change_user_reputation'.
     - Отвечай кратко, в стиле переписки в чате.
   `;
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: systemMessageWithMemory },
-    ...history.map((h) => ({ role: h.role as "user" | "assistant", content: h.content })),
-    { role: "user", content: text } // Ensure current message is at the end
+    ...history.map((h) => ({ 
+        role: h.role as "user" | "assistant", 
+        content: h.content, 
+        name: h.name ? h.name.replace(/[^a-zA-Z0-9_-]/g, '_') : undefined // OpenAI name validation
+    })),
+    { role: "user", content: text, name: firstName.replace(/[^a-zA-Z0-9_-]/g, '_') }
   ];
 
   // 4. Generate Response
@@ -246,7 +265,7 @@ bot.on("message:text", async (ctx) => {
 
   let responseText: string | null = null;
   try {
-      responseText = await generateResponse(messages, userId, scheduleReminder, settings.temperature);
+      responseText = await generateResponse(messages, userId, chatId, scheduleReminder, settings.temperature);
   } finally {
       clearInterval(typingInterval);
   }
@@ -266,8 +285,23 @@ bot.on("message:text", async (ctx) => {
 });
 
 bot.catch((err) => {
+
   console.error("Bot error:", err);
+
 });
 
-console.log("Bot is running...");
-bot.start();
+
+
+console.log("Bot is starting...");
+
+initDB().then(() => {
+
+    bot.start();
+
+    console.log("Bot is running!");
+
+}).catch(err => {
+
+    console.error("Failed to initialize database:", err);
+
+});

@@ -1,235 +1,290 @@
+import "reflect-metadata";
+import { DataSource, Entity, PrimaryColumn, Column, PrimaryGeneratedColumn, CreateDateColumn, ManyToOne, JoinColumn } from "typeorm";
 import * as path from "path";
 import * as fs from "fs";
 
-// Configuration
-const DB_TYPE = process.env.DB_TYPE || "sqlite"; // 'mysql' or 'sqlite'
+// --- Entities ---
 
-let db: any;
+@Entity("users")
+export class User {
+    @PrimaryColumn({ type: "bigint" })
+    id!: string; // TypeORM maps BigInt to string to avoid JS precision loss
 
-// --- SQL Dialect Helpers ---
+    @Column({ type: "varchar", nullable: true })
+    username?: string;
+
+    @Column({ type: "varchar", nullable: true })
+    first_name?: string;
+
+    @Column({ type: "int", default: 0 })
+    reputation!: number;
+}
+
+@Entity("facts")
+export class Fact {
+    @PrimaryGeneratedColumn()
+    id!: number;
+
+    @Column({ type: "bigint" })
+    user_id!: string;
+
+    @Column({ type: "text" })
+    fact!: string;
+
+    @CreateDateColumn()
+    created_at!: Date;
+
+    @ManyToOne(() => User)
+    @JoinColumn({ name: "user_id" })
+    user?: User;
+}
+
+@Entity("history")
+export class History {
+    @PrimaryGeneratedColumn()
+    id!: number;
+
+    @Column({ type: "bigint" })
+    chat_id!: string;
+
+    @Column({ type: "bigint", nullable: true })
+    user_id?: string;
+
+    @Column({ type: "varchar", length: 50 })
+    role!: string;
+
+    @Column({ type: "varchar", nullable: true })
+    name?: string;
+
+    @Column({ type: "text" })
+    content!: string;
+
+    @CreateDateColumn()
+    timestamp!: Date;
+}
+
+@Entity("relationships")
+export class Relationship {
+    @PrimaryGeneratedColumn()
+    id!: number;
+
+    @Column({ type: "bigint" })
+    chat_id!: string;
+
+    @Column({ type: "bigint" })
+    user_id_1!: string;
+
+    @Column({ type: "bigint" })
+    user_id_2!: string;
+
+    @Column({ type: "int", default: 0 })
+    affection!: number; // -100 to 100
+
+    @Column({ type: "varchar", nullable: true })
+    status?: string; // e.g., "enemies", "friends", "married", "it's complicated"
+}
+
+@Entity("chat_settings")
+export class ChatSettings {
+    @PrimaryColumn({ type: "bigint" })
+    chat_id!: string;
+
+    @Column({ type: "float", default: 0.7 })
+    temperature!: number;
+
+    @Column({ type: "varchar", length: 50, default: "neutral" })
+    mood!: string;
+}
+
+// --- DataSource Setup ---
+
+const DB_TYPE = process.env.DB_TYPE || "sqlite";
 const isMysql = DB_TYPE === "mysql";
 
-async function initDB() {
-    if (isMysql) {
-        const mysql = require("mysql2/promise");
-        console.log("[DB] Connecting to MySQL...");
-        
-        // Parse DB_HOST to handle port if strictly necessary, but standard format usually works.
-        // Format: host, user, password, database
-        db = mysql.createPool({
-            host: process.env.DB_HOST || "localhost",
-            user: process.env.DB_USER || "root",
-            password: process.env.DB_PASSWORD || "",
-            database: process.env.DB_NAME || "norel_bot",
-            waitForConnections: true,
-            connectionLimit: 10,
-            queueLimit: 0,
-            charset: "utf8mb4" // Important for emojis
-        });
+let dataSourceConfig: any;
 
-        // Test connection
-        try {
-            const connection = await db.getConnection();
-            console.log("[DB] MySQL connected successfully.");
-            connection.release();
-        } catch (e) {
-            console.error("[DB] MySQL connection failed:", e);
-            process.exit(1);
-        }
+if (isMysql) {
+    dataSourceConfig = {
+        type: "mysql",
+        host: process.env.DB_HOST || "localhost",
+        port: Number(process.env.DB_PORT) || 3306,
+        username: process.env.DB_USER || "root",
+        password: process.env.DB_PASSWORD || "",
+        database: process.env.DB_NAME || "norel_bot",
+        charset: "utf8mb4_unicode_ci",
+        synchronize: true, // Auto-create tables
+        logging: false,
+        entities: [User, Fact, History, ChatSettings, Relationship],
+    };
+} else {
+    const DB_PATH = process.env.DB_PATH || path.join("/tmp", "bot_memory.sqlite");
+    const dir = path.dirname(DB_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-        // Init Tables (MySQL Syntax)
-        const tableOptions = "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci";
-        
-        await db.execute(`
-            CREATE TABLE IF NOT EXISTS users (
-                id BIGINT PRIMARY KEY,
-                username VARCHAR(255),
-                first_name VARCHAR(255)
-            ) ${tableOptions}
-        `);
+    console.log(`[DB] Using SQLite at: ${DB_PATH}`);
+    dataSourceConfig = {
+        type: "better-sqlite3",
+        database: DB_PATH,
+        synchronize: true,
+        logging: false,
+        entities: [User, Fact, History, ChatSettings, Relationship],
+    };
+}
 
-        await db.execute(`
-            CREATE TABLE IF NOT EXISTS facts (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id BIGINT,
-                fact TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(user_id) REFERENCES users(id)
-            ) ${tableOptions}
-        `);
+export const AppDataSource = new DataSource(dataSourceConfig);
 
-        await db.execute(`
-            CREATE TABLE IF NOT EXISTS history (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                chat_id BIGINT,
-                role VARCHAR(50),
-                content TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            ) ${tableOptions}
-        `);
-
-        await db.execute(`
-            CREATE TABLE IF NOT EXISTS chat_settings (
-                chat_id BIGINT PRIMARY KEY,
-                temperature FLOAT DEFAULT 0.7,
-                mood VARCHAR(50) DEFAULT 'neutral'
-            ) ${tableOptions}
-        `);
-
-    } else {
-        // SQLite Implementation
-        // Dynamic import to avoid build errors if better-sqlite3 is missing
-        let Database;
-        try {
-            Database = require("better-sqlite3");
-        } catch (e) {
-            console.error("[DB] Error: 'better-sqlite3' is not installed. Install it or set DB_TYPE=mysql.");
-            process.exit(1);
-        }
-
-        const DB_PATH = process.env.DB_PATH || path.join("/tmp", "bot_memory.sqlite");
-        console.log(`[DB] Using SQLite at: ${DB_PATH}`);
-        
-        const dir = path.dirname(DB_PATH);
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-        db = new Database(DB_PATH);
-
-        // Init Tables (SQLite Syntax)
-        db.exec(`
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY,
-                username TEXT,
-                first_name TEXT
-            );
-            CREATE TABLE IF NOT EXISTS facts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                fact TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(user_id) REFERENCES users(id)
-            );
-            CREATE TABLE IF NOT EXISTS history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id INTEGER,
-                role TEXT,
-                content TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS chat_settings (
-                chat_id INTEGER PRIMARY KEY,
-                temperature REAL DEFAULT 0.7,
-                mood TEXT DEFAULT 'neutral'
-            );
-        `);
+// Initialize Function
+export async function initDB() {
+    if (!AppDataSource.isInitialized) {
+        await AppDataSource.initialize();
+        console.log(`[DB] Connected to ${DB_TYPE} database via TypeORM.`);
     }
 }
 
-// Initialize immediately (Top-level await is supported in newer Node, but let's be safe inside functions)
-// For this module structure, we'll wrap exports to await init or handle it. 
-// Since we are migrating to CommonJS/Node, top-level await might be tricky depending on config.
-// We will simply run initDB synchronously for SQLite, but MySQL is async.
-// Solution: We'll make the export functions async or handle the promise.
-// SIMPLER: Just start it. If it fails, it fails.
-initDB();
+// --- Helper Functions (Facade) ---
 
-
-// --- Helper for Query Execution ---
-async function runQuery(sql: string, params: any[]) {
-    if (isMysql) {
-        const [rows] = await db.execute(sql, params);
-        return rows;
-    } else {
-        const stmt = db.prepare(sql);
-        // SQLite needs run() for inserts/updates, all() for selects.
-        // We'll guess based on SQL command or just try.
-        if (sql.trim().toUpperCase().startsWith("SELECT")) {
-            return stmt.all(...params);
-        } else {
-            return stmt.run(...params);
-        }
-    }
-}
-
-async function getRow(sql: string, params: any[]) {
-    if (isMysql) {
-        const [rows] = await db.execute(sql, params);
-        return (rows as any[])[0];
-    } else {
-        return db.prepare(sql).get(...params);
-    }
-}
-
-
-// --- User Operations ---
 export async function upsertUser(id: number, username: string | undefined, first_name: string) {
-    if (isMysql) {
-        const sql = `
-            INSERT INTO users (id, username, first_name) VALUES (?, ?, ?)
-            ON DUPLICATE KEY UPDATE username = VALUES(username), first_name = VALUES(first_name)
-        `;
-        await runQuery(sql, [id, username || null, first_name]);
-    } else {
-        const sql = `
-            INSERT INTO users (id, username, first_name) VALUES (?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET username = ?, first_name = ?
-        `;
-        await runQuery(sql, [id, username || null, first_name, username || null, first_name]);
-    }
+    const repo = AppDataSource.getRepository(User);
+    const user = new User();
+    user.id = id.toString();
+    user.username = username || undefined; // undefined makes TypeORM skip/set null depending on config, but here manual assign is safer
+    user.first_name = first_name;
+    
+    // TypeORM upsert is handy
+    // We want to preserve reputation if it exists, so we just save.
+    // However, save() might overwrite reputation to default if we pass a new object without it?
+    // Let's use upsert with conflict paths.
+    
+    await repo.upsert(
+        { id: id.toString(), username: username, first_name: first_name },
+        ["id"]
+    );
 }
 
-// --- Chat Settings Operations ---
+export async function changeReputation(userId: number, amount: number) {
+    const repo = AppDataSource.getRepository(User);
+    // Increment implementation
+    await repo.increment({ id: userId.toString() }, "reputation", amount);
+}
+
+export async function getReputation(userId: number): Promise<number> {
+    const repo = AppDataSource.getRepository(User);
+    const user = await repo.findOneBy({ id: userId.toString() });
+    return user ? user.reputation : 0;
+}
+
 export async function upsertChatSettings(chatId: number, temperature: number, mood: string) {
-    if (isMysql) {
-        const sql = `
-            INSERT INTO chat_settings (chat_id, temperature, mood) VALUES (?, ?, ?)
-            ON DUPLICATE KEY UPDATE temperature = VALUES(temperature), mood = VALUES(mood)
-        `;
-        await runQuery(sql, [chatId, temperature, mood]);
-    } else {
-        const sql = `
-            INSERT INTO chat_settings (chat_id, temperature, mood) VALUES (?, ?, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET temperature = ?, mood = ?
-        `;
-        await runQuery(sql, [chatId, temperature, mood, temperature, mood]);
-    }
+    const repo = AppDataSource.getRepository(ChatSettings);
+    await repo.upsert(
+        { chat_id: chatId.toString(), temperature, mood },
+        ["chat_id"]
+    );
 }
 
 export async function getChatSettings(chatId: number): Promise<{ temperature: number, mood: string }> {
-    const sql = `SELECT temperature, mood FROM chat_settings WHERE chat_id = ?`;
-    const result = await getRow(sql, [chatId]);
-    return (result as { temperature: number, mood: string }) || { temperature: 0.7, mood: 'neutral' };
+    const repo = AppDataSource.getRepository(ChatSettings);
+    const settings = await repo.findOneBy({ chat_id: chatId.toString() });
+    return settings || { temperature: 0.7, mood: 'neutral' };
 }
 
-// --- Fact/Memory Operations (RAG) ---
 export async function addFact(userId: number, fact: string) {
-    const sql = `INSERT INTO facts (user_id, fact) VALUES (?, ?)`;
-    await runQuery(sql, [userId, fact]);
+    const repo = AppDataSource.getRepository(Fact);
+    await repo.save({
+        user_id: userId.toString(),
+        fact: fact
+    });
 }
 
 export async function getFacts(userId: number): Promise<string[]> {
-    const sql = `SELECT fact FROM facts WHERE user_id = ? ORDER BY created_at DESC LIMIT 10`;
-    // For MySQL, runQuery returns rows array. For SQLite runQuery (via all) returns rows array.
-    const results = await runQuery(sql, [userId]) as { fact: string }[];
-    return results.map(r => r.fact);
+    const repo = AppDataSource.getRepository(Fact);
+    const facts = await repo.find({
+        where: { user_id: userId.toString() },
+        order: { created_at: "DESC" },
+        take: 10
+    });
+    return facts.map(f => f.fact);
 }
 
-// --- History Operations ---
-export async function addMessage(chatId: number, role: 'user' | 'assistant' | 'system', content: string) {
-    const sql = `INSERT INTO history (chat_id, role, content) VALUES (?, ?, ?)`;
-    await runQuery(sql, [chatId, role, content]);
+export async function addMessage(chatId: number, role: 'user' | 'assistant' | 'system', content: string, name?: string, userId?: number) {
+    const repo = AppDataSource.getRepository(History);
+    await repo.save({
+        chat_id: chatId.toString(),
+        user_id: userId ? userId.toString() : undefined,
+        role: role,
+        name: name,
+        content: content
+    });
 }
 
-export async function getHistory(chatId: number, limit: number = 10): Promise<{ role: string, content: string }[]> {
-    if (isMysql) {
-        // MySQL PREPARED statements do not support ? in LIMIT in some versions/configurations or driver wrappers.
-        // Safe to inject number directly as it is strongly typed as number.
-        const sql = `SELECT role, content FROM history WHERE chat_id = ? ORDER BY id DESC LIMIT ${Number(limit)}`;
-        const results = await runQuery(sql, [chatId]) as { role: string, content: string }[];
-        return results.reverse();
-    } else {
-        const sql = `SELECT role, content FROM history WHERE chat_id = ? ORDER BY id DESC LIMIT ?`;
-        const results = await runQuery(sql, [chatId, limit]) as { role: string, content: string }[];
-        return results.reverse(); 
+export async function getHistory(chatId: number, limit: number = 10): Promise<{ role: string, content: string, name?: string }[]> {
+    const repo = AppDataSource.getRepository(History);
+    const history = await repo.find({
+        where: { chat_id: chatId.toString() },
+        order: { id: "DESC" }, // Use ID for strict insertion order
+        take: limit
+    });
+    // TypeORM returns entities with all properties.
+    // The previous interface expected { role, content, name? }. Entities satisfy this.
+    return history.reverse().map(h => ({
+        role: h.role,
+        content: h.content,
+        name: h.name
+    }));
+}
+
+export async function updateRelationship(chatId: number, userId1: number, userId2: number, affectionDelta: number, status?: string) {
+    const repo = AppDataSource.getRepository(Relationship);
+    // Sort IDs to ensure consistent pairs using string comparison
+    const [id1, id2] = [userId1.toString(), userId2.toString()].sort();
+    
+    let rel = await repo.findOneBy({
+        chat_id: chatId.toString(),
+        user_id_1: id1,
+        user_id_2: id2
+    });
+
+    if (!rel) {
+        rel = repo.create({
+            chat_id: chatId.toString(),
+            user_id_1: id1,
+            user_id_2: id2,
+            affection: 0
+        });
     }
+
+    rel.affection += affectionDelta;
+    if (status) rel.status = status;
+    
+    await repo.save(rel);
+}
+
+export async function getRelationships(chatId: number): Promise<Relationship[]> {
+    const repo = AppDataSource.getRepository(Relationship);
+    return await repo.find({
+        where: { chat_id: chatId.toString() }
+    });
+}
+
+export async function getAllUsersInChat(chatId: number): Promise<User[]> {
+    const historyRepo = AppDataSource.getRepository(History);
+    const userRepo = AppDataSource.getRepository(User);
+    
+    const userIdsRaw = await historyRepo
+        .createQueryBuilder("h")
+        .select("DISTINCT h.user_id", "userId")
+        .where("h.chat_id = :chatId", { chatId: chatId.toString() })
+        .andWhere("h.user_id IS NOT NULL")
+        .getRawMany();
+    
+    const ids = userIdsRaw.map(r => r.userId);
+    if (ids.length === 0) return [];
+
+    return await userRepo.createQueryBuilder("u")
+        .where("u.id IN (:...ids)", { ids })
+        .getMany();
+}
+
+export async function getUser(userId: number): Promise<User | null> {
+    const repo = AppDataSource.getRepository(User);
+    return await repo.findOneBy({ id: userId.toString() });
 }

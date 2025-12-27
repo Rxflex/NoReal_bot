@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { searchWeb, getFunnyImage } from "./tools";
-import { addFact } from "./db";
+import { addFact, changeReputation, updateRelationship, getRelationships, getAllUsersInChat, getUser } from "./db";
 
 const client = new OpenAI({
   baseURL: process.env.OPENAI_BASE_URL || "http://localhost:1234/v1",
@@ -78,11 +78,56 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "change_user_reputation",
+      description: "Change a user's reputation (loyalty/friendship with the bot).",
+      parameters: {
+        type: "object",
+        properties: {
+          user_id: { type: "string", description: "The ID of the user." },
+          amount: { type: "number", description: "Amount to change (e.g., +5, -10)." },
+          reason: { type: "string", description: "Reason for the change." },
+        },
+        required: ["user_id", "amount", "reason"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_relationship",
+      description: "Update the relationship/affection between two users in the chat. Bot can observe their interaction and update it.",
+      parameters: {
+        type: "object",
+        properties: {
+          user_id_1: { type: "string", description: "First user's ID." },
+          user_id_2: { type: "string", description: "Second user's ID." },
+          affection_delta: { type: "number", description: "Change in affection (-20 to 20)." },
+          status: { type: "string", description: "New status description (optional, e.g., 'crush', 'rivals')." },
+        },
+        required: ["user_id_1", "user_id_2", "affection_delta"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_chat_info",
+      description: "Get information about all users in the chat and their relationships.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
 ];
 
 export async function generateResponse(
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
   userId: number,
+  chatId: number,
   onReminder?: (seconds: number, text: string) => void,
   temperature: number = 0.7,
   depth: number = 0
@@ -164,6 +209,22 @@ export async function generateResponse(
           } else {
              result = `Error: Missing parameters for reminder (seconds: ${seconds}, text: ${text})`;
           }
+        } else if (fnName === "change_user_reputation") {
+            const targetId = parseInt(args.user_id);
+            await changeReputation(targetId, args.amount);
+            result = `Reputation of user ${targetId} changed by ${args.amount}. Reason: ${args.reason}`;
+        } else if (fnName === "update_relationship") {
+            const id1 = parseInt(args.user_id_1);
+            const id2 = parseInt(args.user_id_2);
+            await updateRelationship(chatId, id1, id2, args.affection_delta, args.status);
+            result = `Relationship between ${id1} and ${id2} updated (delta: ${args.affection_delta}).`;
+        } else if (fnName === "get_chat_info") {
+            const users = await getAllUsersInChat(chatId);
+            const rels = await getRelationships(chatId);
+            result = JSON.stringify({
+                users: users.map(u => ({ id: u.id, name: u.first_name, username: u.username, reputation: u.reputation })),
+                relationships: rels.map(r => ({ user1: r.user_id_1, user2: r.user_id_2, affection: r.affection, status: r.status }))
+            });
         } else {
           result = "Unknown tool.";
         }
@@ -176,7 +237,7 @@ export async function generateResponse(
       }
 
       // Recursively call for the final answer after tool outputs
-      return await generateResponse(messages, userId, onReminder, temperature, depth + 1);
+      return await generateResponse(messages, userId, chatId, onReminder, temperature, depth + 1);
     }
 
     return content || message.content;

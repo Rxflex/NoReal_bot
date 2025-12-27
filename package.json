@@ -14,8 +14,11 @@
     "typescript": "^5.3.3"
   },
   "dependencies": {
-    "mysql2": "^3.9.0",
+    "better-sqlite3": "^12.5.0",
     "grammy": "^1.38.4",
-    "openai": "^4.28.0"
+    "mysql2": "^3.9.0",
+    "openai": "^4.28.0",
+    "reflect-metadata": "^0.2.1",
+    "typeorm": "^0.3.20"
   }
 }
