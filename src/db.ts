@@ -1,5 +1,5 @@
 import "reflect-metadata";
-import { DataSource, Entity, PrimaryColumn, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn } from "typeorm";
+import { DataSource, Entity, PrimaryColumn, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn, LessThanOrEqual } from "typeorm";
 import * as path from "path";
 import * as fs from "fs";
 
@@ -108,6 +108,30 @@ export class ChatSummary {
     updated_at!: Date;
 }
 
+@Entity("reminders")
+export class Reminder {
+    @PrimaryGeneratedColumn()
+    id!: number;
+
+    @Column({ type: "bigint" })
+    chat_id!: string;
+
+    @Column({ type: "bigint" })
+    user_id!: string;
+
+    @Column({ type: "text" })
+    text!: string;
+
+    @Column({ type: "datetime" })
+    due_at!: Date;
+
+    @Column({ type: "boolean", default: false })
+    is_sent!: boolean;
+
+    @CreateDateColumn()
+    created_at!: Date;
+}
+
 // --- DataSource Setup ---
 
 const DB_TYPE = process.env.DB_TYPE || "sqlite";
@@ -126,7 +150,7 @@ if (isMysql) {
         charset: "utf8mb4_unicode_ci",
         synchronize: true, // Auto-create tables
         logging: false,
-        entities: [User, Fact, History, ChatSettings, Relationship, ChatSummary],
+        entities: [User, Fact, History, ChatSettings, Relationship, ChatSummary, Reminder],
     };
 } else {
     const DB_PATH = process.env.DB_PATH || path.join("/tmp", "bot_memory.sqlite");
@@ -139,7 +163,7 @@ if (isMysql) {
         database: DB_PATH,
         synchronize: true,
         logging: false,
-        entities: [User, Fact, History, ChatSettings, Relationship, ChatSummary],
+        entities: [User, Fact, History, ChatSettings, Relationship, ChatSummary, Reminder],
     };
 }
 
@@ -312,4 +336,30 @@ export async function getAllUsersInChat(chatId: number): Promise<User[]> {
 export async function getUser(userId: number): Promise<User | null> {
     const repo = AppDataSource.getRepository(User);
     return await repo.findOneBy({ id: userId.toString() });
+}
+
+export async function addReminder(chatId: number, userId: number, text: string, dueAt: Date) {
+    const repo = AppDataSource.getRepository(Reminder);
+    await repo.save({
+        chat_id: chatId.toString(),
+        user_id: userId.toString(),
+        text: text,
+        due_at: dueAt,
+        is_sent: false
+    });
+}
+
+export async function getPendingReminders(): Promise<Reminder[]> {
+    const repo = AppDataSource.getRepository(Reminder);
+    return await repo.find({
+        where: {
+            is_sent: false,
+            due_at: LessThanOrEqual(new Date())
+        }
+    });
+}
+
+export async function markReminderSent(id: number) {
+    const repo = AppDataSource.getRepository(Reminder);
+    await repo.update(id, { is_sent: true });
 }

@@ -1,6 +1,6 @@
 import "reflect-metadata";
 import { Bot, Context } from "grammy";
-import { upsertUser, addMessage, getHistory, getFacts, upsertChatSettings, getChatSettings, getReputation, initDB, getChatSummary, getRelationships, getUser } from "./db";
+import { upsertUser, addMessage, getHistory, getFacts, upsertChatSettings, getChatSettings, getReputation, initDB, getChatSummary, getRelationships, getUser, addReminder, getPendingReminders, markReminderSent } from "./db";
 import { generateResponse, summarizeHistory } from "./ai";
 import OpenAI from "openai";
 
@@ -25,6 +25,15 @@ const BASE_SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ||
    Если тебя называет "Бублик" кто-то, кто тебе не друг (Репутация < 10), ты реагируешь как человек, которого незнакомец назвал ласковым прозвищем: злишься, саркастично ставишь на место или игнорируешь.
    Для друзей (Репутация > 50) "Бублик" — нормальная тема.`;
 
+const PASSIVE_SYSTEM_PROMPT = `
+Ты — пассивный наблюдатель в чате. Твоя задача — внимательно слушать и запоминать важные детали о жизни пользователей.
+Если кто-то упоминает планы (поход к врачу, игра, поездка, день рождения), используй 'save_memory', чтобы это не забыть.
+Если ты видишь, что кто-то договорился о чем-то в будущем, ты МОЖЕШЬ поставить себе напоминание через 'set_reminder', чтобы потом спросить, как все прошло.
+В ПАССИВНОМ режиме ты НЕ должен отвечать текстом, если тебя не просят или если нет ОЧЕНЬ веской причины вклиниться (например, тебя напрямую спросили или происходит что-то супер-интересное).
+Если ты решил промолчать, но вызвал инструмент — это идеально.
+Твоя цель — быть полезным и внимательным другом, который все помнит.
+`;
+
 const MOOD_PROMPTS: Record<string, string> = {
     "neutral": "",
     "playful": "Ты игривый, шутишь, используешь смайлики.",
@@ -33,6 +42,26 @@ const MOOD_PROMPTS: Record<string, string> = {
     "toxic": "Ты токсичный, пассивно-агрессивный, любишь подкалывать.",
     "sad": "Ты грустный, депрессивный."
 };
+
+// --- Reminder Checker ---
+async function checkReminders() {
+    try {
+        const pending = await getPendingReminders();
+        for (const rem of pending) {
+            console.log(`[Reminder] Sending reminder ${rem.id} to chat ${rem.chat_id}`);
+            const user = await getUser(parseInt(rem.user_id));
+            const userName = user?.first_name || "друг";
+            
+            await bot.api.sendMessage(rem.chat_id, `⏰ **Напоминалка для ${userName}**\n\n${rem.text}`, { parse_mode: "Markdown" });
+            await markReminderSent(rem.id);
+            await addMessage(parseInt(rem.chat_id), "assistant", `[Напоминание]: ${rem.text}`);
+        }
+    } catch (e) {
+        console.error("[Reminder] Error checking reminders:", e);
+    }
+}
+
+setInterval(checkReminders, 30000); // Check every 30 seconds
 
 // --- Commands ---
 
@@ -310,19 +339,22 @@ bot.on("message:text", async (ctx) => {
 
   const randomChance = Math.random() < 0.10; // 10% chance to reply spontaneously in groups
   let reason = "";
-  if (isPrivate) reason = "Private chat";
-  else if (isMentioned) reason = "Mentioned/Reply";
-  else if (randomChance) reason = "Random 10% chance";
+  let isPassive = false;
 
-  if (!reason) {
-    return;
+  if (isPrivate) {
+      reason = "Private chat";
+  } else if (isMentioned) {
+      reason = "Mentioned/Reply";
+  } else {
+      reason = "Passive monitoring";
+      isPassive = true;
   }
 
-  console.log(`[Bot][${chatId}] Decided to reply. Reason: ${reason}`);
+  console.log(`[Bot][${chatId}] Processing message. Mode: ${isPassive ? 'Passive' : 'Active'} (${reason})`);
 
   // 3. Build Context (RAG + History)
-  const history = await getHistory(chatId, 10); // Reduced history, compensated by summary
-  const facts = await getFacts(userId); // Retrieved memories
+  const history = await getHistory(chatId, 15); // Slightly more history for context
+  const facts = await getFacts(userId); 
   const settings = await getChatSettings(chatId);
   const userReputation = await getReputation(userId);
   const chatSummary = await getChatSummary(chatId);
@@ -330,7 +362,7 @@ bot.on("message:text", async (ctx) => {
   const moodPrompt = MOOD_PROMPTS[settings.mood] || "";
   
   const systemMessageWithMemory = `
-    ${BASE_SYSTEM_PROMPT}
+    ${isPassive ? PASSIVE_SYSTEM_PROMPT : BASE_SYSTEM_PROMPT}
     ${moodPrompt}
     
     [КРАТКОЕ СОДЕРЖАНИЕ ПРЕДЫДУЩЕГО РАЗГОВОРА]
@@ -339,27 +371,24 @@ bot.on("message:text", async (ctx) => {
     [ИНФОРМАЦИЯ О СОБЕСЕДНИКЕ]
     Имя: ${firstName} (@${username})
     ID: ${userId}
-    Твоя Репутация у этого пользователя: ${userReputation} (рейтинг дружбы)
+    Твоя Репутация у этого пользователя: ${userReputation}
     Факты: ${facts.length > 0 ? facts.join("; ") : "нет данных"} 
     
+    [ДАТА И ВРЕМЯ]
+    Сейчас: ${new Date().toLocaleString('ru-RU')}
+    
     [ПРАВИЛА ОТНОШЕНИЙ]
-    1. Если Репутация < 10: Ты считаешь этого человека незнакомцем. Если он называет тебя "Бублик", ты ОБЯЗАТЕЛЬНО злишься, хамишь или отстраненно ставишь его на место. Ты не позволяешь незнакомым такое панибратство.
-    2. Если Репутация >= 50: Вы — лучшие друзья, "Бублик" для тебя — это ласковое прозвище, на которое ты реагируешь тепло или по-доброму подкалываешь в ответ.
-    3. Если репутация между 10 и 50: Ты терпишь прозвище, но можешь саркастично напомнить, что вы еще не настолько близки.
+    1. Если Репутация < 10: Ты считаешь этого человека незнакомцем. Если он называет тебя "Бублик", ты ОБЯЗАТЕЛЬНО злишься или хамишь (в АКТИВНОМ режиме).
+    2. Если Репутация >= 50: Вы — лучшие друзья, "Бублик" — это ок.
     
     [ОТНОШЕНИЯ И ШИППЕРИНГ]
-    - Ты следишь за взаимодействием людей в чате. 
-    - Если видишь, что кто-то мило общается или ссорится, используй 'update_relationship' (нужны ID обоих).
-    - Ты можешь 'шипперить' людей, если считаешь это уместным.
-    - Используй 'get_chat_info', чтобы узнать, кто есть в чате и какие между ними отношения.
+    - Ты следишь за взаимодействием людей. Используй 'update_relationship', если видишь химию или конфликты.
     
     [ИНСТРУКЦИИ]
-    - Если пользователь сообщил новый факт о себе, сохрани это через 'save_memory'.
-    - Если репутация пользователя должна измениться (он тебя похвалил, оскорбил или сделал что-то крутое), используй 'change_user_reputation'.
-    - ОТВЕЧАЙ МАКСИМАЛЬНО КРАТКО (1-2 предложения). В стиле переписки в чате. Сленг, мемы и ирония — это твое. Не будь занудой.
-    - Картинки и мемы присылай просто прямой ссылкой.
-    - ВАЖНО: НИКОГДА не пиши в чат техническую информацию: сколько очков репутации ты добавил, какой сейчас уровень дружбы, что ты сохранил факт в память или вызвал инструмент. Просто делай это и отвечай как человек.
-    - ВАЖНО: Не объясняй пользователю правила про имя "Бублик". Просто придерживайся их в своем поведении.
+    - Если пользователь сообщил новый факт о себе или своих планах (куда-то идет, что-то делает), сохрани это через 'save_memory'.
+    - Если кто-то планирует что-то в будущем (врач, игра, встреча), ОБЯЗАТЕЛЬНО поставь себе напоминание 'set_reminder', чтобы спросить об этом позже. 
+    - В АКТИВНОМ режиме отвечай кратко (1-2 предложения).
+    - В ПАССИВНОМ режиме (когда тебя не звали) ты должен быть тихим. Используй инструменты молча. Отвечай текстом ТОЛЬКО если у тебя есть реально крутой комментарий или ты ХОЧЕШЬ вклиниться в беседу (шанс 5-10%). В остальное время — молчи.
   `;
 
   // Trigger background summarization if history is long (approx. every 10-15 messages)
@@ -384,17 +413,18 @@ bot.on("message:text", async (ctx) => {
 
   // 4. Generate Response
   // Loop typing action to keep it active during long generations
-  const typingInterval = setInterval(() => {
-    ctx.replyWithChatAction("typing").catch(() => {});
-  }, 4000);
-  ctx.replyWithChatAction("typing").catch(() => {}); // Initial call
+  let typingInterval: NodeJS.Timeout | undefined;
+  if (!isPassive) {
+      typingInterval = setInterval(() => {
+        ctx.replyWithChatAction("typing").catch(() => {});
+      }, 4000);
+      ctx.replyWithChatAction("typing").catch(() => {}); // Initial call
+  }
   
-  const scheduleReminder = (seconds: number, reminderText: string) => {
-      console.log(`[Bot][${chatId}] Scheduled reminder in ${seconds}s: ${reminderText}`);
-      setTimeout(() => {
-          bot.api.sendMessage(chatId, `⏰ Эй, ${firstName}, напоминаю: ${reminderText}`)
-             .catch(e => console.error("Failed to send reminder:", e));
-      }, seconds * 1000);
+  const scheduleReminder = async (seconds: number, reminderText: string) => {
+      console.log(`[Bot][${chatId}] Saving reminder in ${seconds}s: ${reminderText}`);
+      const dueAt = new Date(Date.now() + seconds * 1000);
+      await addReminder(chatId, userId, reminderText, dueAt);
   };
 
   let responseText: string | null = null;
@@ -402,7 +432,7 @@ bot.on("message:text", async (ctx) => {
   try {
       responseText = await generateResponse(messages, userId, chatId, scheduleReminder, settings.temperature);
   } finally {
-      clearInterval(typingInterval);
+      if (typingInterval) clearInterval(typingInterval);
   }
 
   // 5. Send Response & Save to History
@@ -417,8 +447,12 @@ bot.on("message:text", async (ctx) => {
       }
       await addMessage(chatId, "assistant", responseText as string);
   } else {
-      console.error(`[Bot][${chatId}] AI failed to generate response`);
-      await ctx.reply("System error: 502 Bad Gateway (AI Server is down or rejecting requests). Try again later.");
+      if (!isPassive) {
+          console.error(`[Bot][${chatId}] AI failed to generate response in active mode`);
+          await ctx.reply("System error: AI failed to respond. Try again later.");
+      } else {
+          console.log(`[Bot][${chatId}] Passive mode: AI chose to remain silent.`);
+      }
   }
 });
 

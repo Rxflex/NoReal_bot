@@ -163,7 +163,7 @@ export async function generateResponse(
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
   userId: number,
   chatId: number,
-  onReminder?: (seconds: number, text: string) => void,
+  onReminder?: (seconds: number, text: string) => Promise<void>,
   temperature: number = 0.7,
   depth: number = 0
 ) {
@@ -271,7 +271,7 @@ export async function generateResponse(
           const seconds = args.seconds || args.time || args.delay;
           const text = args.text || args.message || args.reminder;
           if (onReminder && typeof seconds === 'number' && text) {
-             onReminder(seconds, text);
+             await onReminder(seconds, text);
              result = `Timer set for ${seconds} seconds.`;
           } else {
              result = `Error: Missing parameters for reminder (seconds: ${seconds}, text: ${text})`;
