@@ -1,19 +1,21 @@
 {
   "name": "telegram-ai-bot",
   "module": "src/index.ts",
-  "type": "module",
+  "type": "commonjs",
   "scripts": {
-    "start": "bun run src/index.ts",
-    "dev": "bun --watch run src/index.ts"
+    "start": "node index.js",
+    "build": "tsc",
+    "postinstall": "tsc",
+    "dev": "ts-node src/index.ts"
   },
   "devDependencies": {
-    "@types/bun": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
   },
   "dependencies": {
+    "better-sqlite3": "^9.4.0",
     "grammy": "^1.38.4",
-    "openai": "^6.15.0"
+    "openai": "^4.28.0"
   }
 }
