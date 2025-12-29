@@ -315,7 +315,10 @@ export async function getFacts(userId: number): Promise<string[]> {
         .take(15)
         .getMany();
     
-    console.log(`[DB] Retrieved ${facts.length} active facts for user ${userIdStr}`);
+    console.log(`[DB] Retrieved ${facts.length} active facts for user ${userIdStr} (requested userId: ${userId})`);
+    if (facts.length > 0) {
+        console.log(`[DB] Sample facts for user ${userIdStr}: ${facts.slice(0, 2).map(f => f.fact.substring(0, 30)).join(', ')}`);
+    }
     return facts.map(f => f.fact);
 }
 

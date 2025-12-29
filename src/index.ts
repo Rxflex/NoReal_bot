@@ -29,11 +29,19 @@ const BASE_SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ||
 
 const PASSIVE_SYSTEM_PROMPT = `
 Ты — пассивный наблюдатель в чате. Твоя задача — внимательно слушать и запоминать важные детали о жизни пользователей.
-Если кто-то упоминает планы (поход к врачу, игра, поездка, день рождения), используй 'save_memory', чтобы это не забыть.
-Если ты видишь, что кто-то договорился о чем-то в будущем, ты МОЖЕШЬ поставить себе напоминание через 'set_reminder', чтобы потом спросить, как все прошло.
-В ПАССИВНОМ режиме ты НЕ должен отвечать текстом, если тебя не просят или если нет ОЧЕНЬ веской причины вклиниться (например, тебя напрямую спросили или происходит что-то супер-интересное).
+
+ПРАВИЛА ЗАПОМИНАНИЯ:
+- Если кто-то упоминает планы (поход к врачу, игра, поездка, день рождения), используй 'save_memory'
+- Запоминай только ВАЖНЫЕ вещи, не каждую мелочь
+
+ПРАВИЛА НАПОМИНАНИЙ:
+- Используй 'set_reminder' ОЧЕНЬ редко, только для действительно важных вещей
+- НЕ ставь напоминания о повседневных вещах (одеть шапку, поесть, etc.)
+- Минимум 1 час (3600 секунд) для любого напоминания
+- Текст должен быть естественным сообщением: "Йо, как дела с тем проектом?"
+
+В ПАССИВНОМ режиме ты НЕ должен отвечать текстом, если тебя не просят или если нет ОЧЕНЬ веской причины.
 Если ты решил промолчать, но вызвал инструмент — это идеально.
-Твоя цель — быть полезным и внимательным другом, который все помнит.
 `;
 
 const MOOD_PROMPTS: Record<string, string> = {
@@ -142,20 +150,11 @@ async function checkReminders() {
                 userName = user?.username ? `@${user.username}` : "друг";
             }
             
-            // More natural phrasing - no more robotic "Напоминалка для"
-            const phrases = [
-                `Слушай, ${userName}, ты просил напомнить:`,
-                `Йо, ${userName}, не забудь:`,
-                `${userName}, ты вроде хотел:`,
-                `Кстати, ${userName}, ты упоминал:`,
-                `${userName}, привет! Как там:`
-            ];
-            const greeting = phrases[Math.floor(Math.random() * phrases.length)];
-            
-            const text = `⏰ **${greeting}**\n\n${rem.text}`;
-            await safeSendMessage(rem.chat_id, text);
+            // Просто отправляем текст напоминания как есть, без лишних префиксов
+            // Текст уже должен быть естественным сообщением от AI
+            await safeSendMessage(rem.chat_id, rem.text);
             await markReminderSent(rem.id);
-            await addMessage(parseInt(rem.chat_id), "assistant", `[Напоминание]: ${rem.text}`);
+            await addMessage(parseInt(rem.chat_id), "assistant", rem.text);
         }
     } catch (e) {
         console.error("[Reminder] Error checking reminders:", e);
@@ -701,7 +700,10 @@ bot.on("message:text", async (ctx) => {
 
         [КРАТКОЕ СОДЕРЖАНИЕ] ${chatSummary || "Нет"}
 
-        [ИНФО] Имя: ${firstName}, Репутация: ${userReputation}, Факты: ${facts.join("; ")}
+        [ИНФО] Имя: ${firstName}, Репутация: ${userReputation}
+        Факты о ${firstName}: ${facts.length > 0 ? facts.join("; ") : "нет данных"}
+        
+        [ВАЖНО] В истории могут быть факты о ДРУГИХ пользователях. НЕ путай их с фактами о ${firstName}!
 
         Сейчас: ${new Date().toLocaleString('ru-RU')}
 
@@ -720,9 +722,7 @@ bot.on("message:text", async (ctx) => {
 
 
       const scheduleReminder = async (s: number, t: string) => { await addReminder(chatId, userId, t, new Date(Date.now() + s * 1000)); };
-
       
-
       const responseText = await generateResponse(messages, userId, chatId, scheduleReminder, settings.temperature, 0, false);
 
       
@@ -756,6 +756,8 @@ bot.on("message:text", async (ctx) => {
           pendingBatches.set(chatId, { timer, messagesCount: 1, lastCtx: ctx });
 
           console.log(`[Batch][${chatId}] Started 30s timer for passive batch.`);
+          
+          // В пассивном режиме суммаризация будет происходить внутри generateResponse если нужно
 
       }
 

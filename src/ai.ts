@@ -70,12 +70,12 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "set_reminder",
-      description: "Set a reminder for the user. Only use this for REALLY important things. IMPORTANT: 'text' must be the ACTUAL natural message to the user (e.g., 'Йо, как прошел поход в магазин?'), NOT a description of a task.",
+      description: "Set a reminder for the user. Use VERY sparingly - only for truly important things they specifically asked to remember. IMPORTANT: 'text' must be a natural, casual message you'll send later (e.g., 'Йо, как дела с тем проектом?'), NOT a description.",
       parameters: {
         type: "object",
         properties: {
-          seconds: { type: "number", description: "Delay in seconds." },
-          text: { type: "string", description: "The message to send (casual, friendly, 1-2 sentences)." },
+          seconds: { type: "number", description: "Delay in seconds (minimum 3600 = 1 hour)." },
+          text: { type: "string", description: "The casual message to send later (1-2 sentences max)." },
         },
         required: ["seconds", "text"],
       },
@@ -145,9 +145,11 @@ export async function summarizeHistory(
   chatId: number,
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]
 ) {
-    if (messages.length < 5) return;
+    // Проверяем по количеству символов, а не сообщений
+    const totalChars = JSON.stringify(messages).length;
+    if (totalChars < 15000) return false; // Возвращаем false если суммаризация не нужна
     
-    console.log(`[AI][${chatId}] Summarizing conversation...`);
+    console.log(`[AI][${chatId}] Summarizing conversation (${totalChars} chars)...`);
     const summaryPrompt = `
       Сделай краткую выжимку этого диалога на русском языке. 
       Укажи ключевые темы, принятые решения и важные детали о пользователях.
@@ -155,23 +157,29 @@ export async function summarizeHistory(
     `;
     
     try {
+        // Создаем отдельный массив для суммаризации, не засоряя основной контекст
+        const summaryMessages = [
+            ...messages.slice(0, -1), // Все сообщения кроме последнего
+            { role: "system" as const, content: summaryPrompt }
+        ];
+        
         const response = await client.chat.completions.create({
             model: "qwen/qwen3-next-80b-a3b-thinking",
-            messages: [
-                ...messages,
-                { role: "system", content: summaryPrompt }
-            ],
+            messages: summaryMessages,
             temperature: 0.3,
+            max_tokens: 500,
         });
         
         const summary = response.choices[0]?.message?.content;
         if (summary) {
             console.log(`[AI][${chatId}] New summary: ${summary}`);
             await updateChatSummary(chatId, summary);
+            return true; // Возвращаем true если суммаризация прошла успешно
         }
     } catch (e) {
         console.error(`[AI][${chatId}] Summarization failed:`, e);
     }
+    return false;
 }
 
 export async function generateResponse(
@@ -184,6 +192,8 @@ export async function generateResponse(
   background: boolean = false
 ) {
   const startTime = Date.now();
+  console.log(`[AI][${chatId}] generateResponse called with userId: ${userId}, depth: ${depth}, background: ${background}`);
+  
   if (depth > 5) {
       console.warn(`[AI][${chatId}] Max recursion depth reached.`);
       return "Уф, я немного запутался. Давай попробуем еще раз.";
@@ -204,12 +214,27 @@ export async function generateResponse(
       }
   }
 
-  // --- Context Management: Truncate messages if they are too long ---
+  // --- Context Management: Summarization and Truncation ---
   const MAX_CHARS = 40000; // Rough limit for context window
   let totalChars = JSON.stringify(messages).length;
   
+  // Если контекст очень большой, сначала попробуем суммаризацию (только на первом уровне рекурсии)
+  if (totalChars > 60000 && depth === 0) {
+      console.log(`[AI][${chatId}] Context very large (${totalChars} chars), attempting summarization...`);
+      const summarized = await summarizeHistory(chatId, messages);
+      if (summarized) {
+          // После суммаризации берем только последние 10 сообщений + system prompt
+          const systemMsg = messages[0]?.role === 'system' ? messages[0] : null;
+          const recentMessages = messages.slice(-10);
+          messages = systemMsg ? [systemMsg, ...recentMessages] : recentMessages;
+          totalChars = JSON.stringify(messages).length;
+          console.log(`[AI][${chatId}] Context reduced to ${messages.length} messages (${totalChars} chars) after summarization`);
+      }
+  }
+  
+  // Если все еще слишком большой, обрезаем
   if (totalChars > MAX_CHARS) {
-      console.log(`[AI][${chatId}] Context too large (${totalChars} chars), truncating history...`);
+      console.log(`[AI][${chatId}] Context still too large (${totalChars} chars), truncating history...`);
       const systemMsg = messages[0]?.role === 'system' ? messages[0] : null;
       const others = messages.slice(systemMsg ? 1 : 0);
       
@@ -238,6 +263,7 @@ export async function generateResponse(
       tools: tools,
       tool_choice: "auto",
       temperature: temperature,
+      max_tokens: 1000, // Ограничение на количество токенов для ответа
     });
 
     const duration = Date.now() - startTime;
@@ -321,6 +347,7 @@ export async function generateResponse(
           result = await getFunnyImage(args.keyword || args.query || args.q);
         } else if (normFnName === "savememory") {
           const ttl = args.ttl_seconds || args.ttl || args.duration;
+          console.log(`[AI][${chatId}] Saving memory for userId ${userId}: ${args.fact || args.memory || args.text}`);
           await addFact(userId, args.fact || args.memory || args.text, ttl);
           result = `Memory saved: ${args.fact || args.memory || args.text} (TTL: ${ttl || 'inf'})`;
         } else if (normFnName === "deletememory") {
@@ -329,9 +356,13 @@ export async function generateResponse(
         } else if (normFnName === "setreminder") {
           const seconds = args.seconds || args.time || args.delay;
           const text = args.text || args.message || args.reminder;
-          if (onReminder && typeof seconds === 'number' && text) {
+          
+          // Минимум 1 час для напоминаний
+          if (seconds < 3600) {
+            result = `Error: Minimum reminder time is 1 hour (3600 seconds). Got: ${seconds}`;
+          } else if (onReminder && typeof seconds === 'number' && text) {
              await onReminder(seconds, text);
-             result = `Timer set for ${seconds} seconds.`;
+             result = `Reminder set for ${Math.round(seconds/3600)} hours.`;
           } else {
              result = `Error: Missing parameters for reminder (seconds: ${seconds}, text: ${text})`;
           }
