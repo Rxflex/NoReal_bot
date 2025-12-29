@@ -13,6 +13,25 @@ if (!BOT_TOKEN) {
 
 const bot = new Bot(BOT_TOKEN);
 
+// --- Chat Processing Lock System ---
+const processingChats = new Set<number>();
+
+function isProcessing(chatId: number): boolean {
+    return processingChats.has(chatId);
+}
+
+function lockChat(chatId: number): boolean {
+    if (processingChats.has(chatId)) {
+        return false; // Already locked
+    }
+    processingChats.add(chatId);
+    return true; // Successfully locked
+}
+
+function unlockChat(chatId: number): void {
+    processingChats.delete(chatId);
+}
+
 // Base System Prompt
 const BASE_SYSTEM_PROMPT = process.env.SYSTEM_PROMPT || 
   `Ты — парень по имени Норел (от No Real). Твой юзернейм: @TheRoguel_bot. Для близких друзей — Бублик.
@@ -61,6 +80,9 @@ const MOOD_PROMPTS: Record<string, string> = {
  * Also detects image URLs and sends them as photos.
  */
 async function safeReply(ctx: any, text: string, extra: any = {}) {
+    const chatId = ctx.chat?.id || 'unknown';
+    console.log(`[safeReply][${chatId}] Attempting to send message: ${text.substring(0, 100)}...`);
+    
     // Regex to detect image URLs (common extensions)
     const imageRegex = /(https?:\/\/.*\.(?:png|jpg|jpeg|gif|webp))/i;
     const imageMatch = text.match(imageRegex);
@@ -71,30 +93,51 @@ async function safeReply(ctx: any, text: string, extra: any = {}) {
         const caption = text.replace(imageUrl, "").trim();
         
         try {
+            console.log(`[safeReply][${chatId}] Sending photo with URL: ${imageUrl}`);
             const hasMarkdown = /[*_`\[]/.test(caption);
             const photoOptions = { 
                 ...extra, 
                 caption: caption || undefined,
                 parse_mode: hasMarkdown ? "Markdown" : undefined 
             };
-            return await ctx.replyWithPhoto(imageUrl, photoOptions);
+            const result = await ctx.replyWithPhoto(imageUrl, photoOptions);
+            console.log(`[safeReply][${chatId}] Photo sent successfully`);
+            return result;
         } catch (e) {
-            console.error(`[Bot] Failed to send photo, falling back to text. Error:`, (e as any).message);
+            console.error(`[safeReply][${chatId}] Failed to send photo, falling back to text. Error:`, (e as any).message);
             // If replyWithPhoto fails, fall back to normal text reply
         }
     }
 
     const hasMarkdown = /[*_`\[]/.test(text);
     
-    if (!hasMarkdown) {
-        return await ctx.reply(text, extra);
-    }
-
     try {
-        return await ctx.reply(text, { ...extra, parse_mode: "Markdown" });
+        if (!hasMarkdown) {
+            console.log(`[safeReply][${chatId}] Sending plain text message`);
+            const result = await ctx.reply(text, extra);
+            console.log(`[safeReply][${chatId}] Plain text message sent successfully`);
+            return result;
+        } else {
+            console.log(`[safeReply][${chatId}] Sending markdown message`);
+            const result = await ctx.reply(text, { ...extra, parse_mode: "Markdown" });
+            console.log(`[safeReply][${chatId}] Markdown message sent successfully`);
+            return result;
+        }
     } catch (e) {
-        console.error(`[Bot] Markdown parsing failed for message, falling back to plain text. Error:`, (e as any).message);
-        return await ctx.reply(text, extra);
+        console.error(`[safeReply][${chatId}] Failed to send message. Error:`, (e as any).message);
+        if (hasMarkdown) {
+            console.log(`[safeReply][${chatId}] Retrying as plain text`);
+            try {
+                const result = await ctx.reply(text, extra);
+                console.log(`[safeReply][${chatId}] Plain text fallback sent successfully`);
+                return result;
+            } catch (e2) {
+                console.error(`[safeReply][${chatId}] Plain text fallback also failed:`, (e2 as any).message);
+                throw e2;
+            }
+        } else {
+            throw e;
+        }
     }
 }
 
@@ -440,6 +483,14 @@ async function processChatBatch(chatId: number) {
 
     console.log(`[Batch][${chatId}] Processing batch of ${messagesCount} messages.`);
 
+    // Check if chat is already being processed
+    if (!lockChat(chatId)) {
+        console.log(`[Batch][${chatId}] Chat is already being processed, skipping batch`);
+        return;
+    }
+
+    try {
+
 
 
     // 2. Decide if we should reply (In a batch, we are usually in passive mode)
@@ -575,6 +626,12 @@ async function processChatBatch(chatId: number) {
     } else {
 
         console.log(`[Bot][${chatId}] Passive batch: AI chose to remain silent or suppressed (lucky: ${isLucky}).`);
+        
+        } catch (error) {
+            console.error(`[Batch][${chatId}] Error in batch processing:`, error);
+        } finally {
+            unlockChat(chatId);
+        }
 
     }
 
@@ -615,6 +672,12 @@ bot.on("message:text", async (ctx) => {
 
 
   if (ctx.from.id === ctx.me.id) return;
+
+  // 2. Check if chat is already being processed
+  if (isProcessing(chatId)) {
+      console.log(`[Bot][${chatId}] Chat is already being processed, skipping message from ${firstName}`);
+      return;
+  }
 
 
 
@@ -669,72 +732,59 @@ bot.on("message:text", async (ctx) => {
 
 
       console.log(`[Bot][${chatId}] Active trigger (${isPrivate ? 'Private' : 'Mention'}). Responding NOW.`);
-
       
+      // Lock the chat to prevent concurrent processing
+      if (!lockChat(chatId)) {
+          console.log(`[Bot][${chatId}] Failed to lock chat for active processing, another request in progress`);
+          return;
+      }
 
-      let typingInterval = setInterval(() => { ctx.replyWithChatAction("typing").catch(() => {}); }, 4000);
-
-      ctx.replyWithChatAction("typing").catch(() => {});
-
-
-
-      const history = await getHistory(chatId, 15);
-
-      const facts = await getFacts(userId);
-
-      const settings = await getChatSettings(chatId);
-
-      const userReputation = await getReputation(userId);
-
-      const chatSummary = await getChatSummary(chatId);
-
-      const moodPrompt = MOOD_PROMPTS[settings.mood] || "";
-
-
-
-      const systemMessage = `
-
-        ${BASE_SYSTEM_PROMPT}
-
-        ${moodPrompt}
-
-        [КРАТКОЕ СОДЕРЖАНИЕ] ${chatSummary || "Нет"}
-
-        [ИНФО] Имя: ${firstName}, Репутация: ${userReputation}
-        Факты о ${firstName}: ${facts.length > 0 ? facts.join("; ") : "нет данных"}
-        
-        [ВАЖНО] В истории могут быть факты о ДРУГИХ пользователях. НЕ путай их с фактами о ${firstName}!
-
-        Сейчас: ${new Date().toLocaleString('ru-RU')}
-
-      `;
-
-
-
-      const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-
-          { role: "system", content: systemMessage },
-
-          ...history.map(h => ({ role: h.role as any, content: h.content, name: h.name?.replace(/[^a-zA-Z0-9_-]/g, '_') }))
-
-      ];
-
-
-
-      const scheduleReminder = async (s: number, t: string) => { await addReminder(chatId, userId, t, new Date(Date.now() + s * 1000)); };
+      let typingInterval: NodeJS.Timeout | null = null;
       
-      const responseText = await generateResponse(messages, userId, chatId, scheduleReminder, settings.temperature, 0, false);
+      try {
+          typingInterval = setInterval(() => { ctx.replyWithChatAction("typing").catch(() => {}); }, 4000);
+          ctx.replyWithChatAction("typing").catch(() => {});
 
-      
+          const history = await getHistory(chatId, 15);
+          const facts = await getFacts(userId);
+          const settings = await getChatSettings(chatId);
+          const userReputation = await getReputation(userId);
+          const chatSummary = await getChatSummary(chatId);
+          const moodPrompt = MOOD_PROMPTS[settings.mood] || "";
 
-      clearInterval(typingInterval);
+          const systemMessage = `
+            ${BASE_SYSTEM_PROMPT}
+            ${moodPrompt}
+            [КРАТКОЕ СОДЕРЖАНИЕ] ${chatSummary || "Нет"}
+            [ИНФО] Имя: ${firstName}, Репутация: ${userReputation}
+            Факты о ${firstName}: ${facts.length > 0 ? facts.join("; ") : "нет данных"}
+            
+            [ВАЖНО] В истории могут быть факты о ДРУГИХ пользователях. НЕ путай их с фактами о ${firstName}!
+            Сейчас: ${new Date().toLocaleString('ru-RU')}
+          `;
 
-      if (responseText) {
+          const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+              { role: "system", content: systemMessage },
+              ...history.map(h => ({ role: h.role as any, content: h.content, name: h.name?.replace(/[^a-zA-Z0-9_-]/g, '_') }))
+          ];
 
-          await safeReply(ctx, responseText);
+          const scheduleReminder = async (s: number, t: string) => { await addReminder(chatId, userId, t, new Date(Date.now() + s * 1000)); };
+          
+          const responseText = await generateResponse(messages, userId, chatId, scheduleReminder, settings.temperature, 0, false);
 
-          await addMessage(chatId, "assistant", responseText as string);
-
+          if (responseText) {
+              console.log(`[Bot][${chatId}] Sending response: ${responseText.substring(0, 50)}...`);
+              await safeReply(ctx, responseText);
+              await addMessage(chatId, "assistant", responseText as string);
+              console.log(`[Bot][${chatId}] Response sent successfully`);
+          } else {
+              console.log(`[Bot][${chatId}] No response generated`);
+          }
+      } catch (error) {
+          console.error(`[Bot][${chatId}] Error in active processing:`, error);
+      } finally {
+          if (typingInterval) clearInterval(typingInterval);
+          unlockChat(chatId);
       }
 
   } else {

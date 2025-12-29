@@ -414,9 +414,11 @@ export async function generateResponse(
       return await generateResponse(messages, userId, chatId, onReminder, temperature, depth + 1, background);
     }
 
-    return content || message.content;
+    const finalResponse = content || message.content;
+    console.log(`[AI][${chatId}] Final response (depth: ${depth}): ${finalResponse ? finalResponse.substring(0, 100) + '...' : 'null'}`);
+    return finalResponse;
   } catch (error) {
-    console.error("AI Error:", error);
+    console.error(`[AI][${chatId}] Error at depth ${depth}:`, error);
     return null;
   }
 }
