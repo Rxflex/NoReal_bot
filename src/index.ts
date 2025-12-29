@@ -618,23 +618,17 @@ async function processChatBatch(chatId: number) {
         const aiDuration = Date.now() - aiStartTime;
 
         console.log(`[Bot][${chatId}] Sending passive response (${aiDuration}ms): ${responseText.substring(0, 50)}...`);
-
         await safeReply(lastCtx, responseText);
-
         await addMessage(chatId, "assistant", responseText as string);
-
     } else {
-
         console.log(`[Bot][${chatId}] Passive batch: AI chose to remain silent or suppressed (lucky: ${isLucky}).`);
-        
-        } catch (error) {
-            console.error(`[Batch][${chatId}] Error in batch processing:`, error);
-        } finally {
-            unlockChat(chatId);
-        }
-
     }
-
+    
+    } catch (error) {
+        console.error(`[Batch][${chatId}] Error in batch processing:`, error);
+    } finally {
+        unlockChat(chatId);
+    }
 }
 
 
