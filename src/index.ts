@@ -3,7 +3,7 @@ import "reflect-metadata";
 import { Bot, Context } from "grammy";
 import { run } from "@grammyjs/runner";
 import { upsertUser, addMessage, getHistory, getFacts, upsertChatSettings, getChatSettings, getReputation, initDB, getChatSummary, getRelationships, getUser, addReminder, getPendingReminders, markReminderSent, shouldReplyPassive } from "./db";
-import { generateResponse, summarizeHistory } from "./ai";
+import { generateResponse, summarizeHistory, BotResponse } from "./ai";
 import OpenAI from "openai";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -45,7 +45,14 @@ const BASE_SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ||
    ПРАВИЛО ИМЕНИ:
    Если тебя называют "Бублик" кто-то, кто тебе не друг (Репутация < 10), ты реагируешь как человек, которого незнакомец назвал ласковым прозвищем: злишься, саркастично ставишь на место или игнорируешь.
    Для друзей (Репутация > 50) "Бублик" — нормальная тема.
-   Если тебя называют "TheRoguel_bot" или "Рогул", ты можешь иронично напомнить, что тебя зовут Норел, или просто ответить по делу.`;
+   Если тебя называют "TheRoguel_bot" или "Рогул", ты можешь иронично напомнить, что тебя зовут Норел, или просто ответить по делу.
+   
+   ПРАВИЛО ИНСТРУМЕНТОВ:
+   - Когда просят мем, картинку, гиф - ОБЯЗАТЕЛЬНО используй get_funny_image(keyword="...")
+   - Когда спрашивают про сайт или ссылку - используй extract_url_content(url="...")
+   - Когда нужна актуальная инфа - используй search_web(query="...")
+   - НЕ пиши названия функций как текст! Используй их как инструменты!
+   - Всегда используй инструменты, когда они подходят к запросу!`;
 
 const PASSIVE_SYSTEM_PROMPT = `
 Ты — пассивный наблюдатель в чате. Твоя задача — внимательно слушать и запоминать важные детали о жизни пользователей.
@@ -76,40 +83,59 @@ const MOOD_PROMPTS: Record<string, string> = {
 // --- Helpers ---
 
 /**
+ * Send bot response (text and/or photo)
+ */
+async function sendBotResponse(ctx: any, response: BotResponse) {
+    const chatId = ctx.chat?.id || 'unknown';
+    
+    if (response.photo) {
+        console.log(`[sendBotResponse][${chatId}] Sending photo: ${response.photo.url}`);
+        try {
+            await ctx.replyWithPhoto(response.photo.url, {
+                caption: response.photo.caption || undefined
+            });
+        } catch (error) {
+            console.error(`[sendBotResponse][${chatId}] Failed to send photo:`, error);
+            // Fallback to text if photo fails
+            if (response.text) {
+                await safeReply(ctx, response.text);
+            }
+        }
+    } else if (response.text) {
+        await safeReply(ctx, response.text);
+    }
+}
+
+/**
+ * Send bot response via bot.api (for scheduled messages)
+ */
+async function sendBotResponseApi(chatId: number, response: BotResponse) {
+    if (response.photo) {
+        console.log(`[sendBotResponseApi][${chatId}] Sending photo: ${response.photo.url}`);
+        try {
+            await bot.api.sendPhoto(chatId, response.photo.url, {
+                caption: response.photo.caption || undefined
+            });
+        } catch (error) {
+            console.error(`[sendBotResponseApi][${chatId}] Failed to send photo:`, error);
+            // Fallback to text if photo fails
+            if (response.text) {
+                await safeSendMessage(chatId, response.text);
+            }
+        }
+    } else if (response.text) {
+        await safeSendMessage(chatId, response.text);
+    }
+}
+
+/**
  * Sends a message with Markdown if it contains markdown characters, 
  * and falls back to plain text if parsing fails.
- * Also detects image URLs and sends them as photos.
  */
 async function safeReply(ctx: any, text: string, extra: any = {}) {
     const chatId = ctx.chat?.id || 'unknown';
     console.log(`[safeReply][${chatId}] Attempting to send message: ${text.substring(0, 100)}...`);
     
-    // Regex to detect image URLs (common extensions)
-    const imageRegex = /(https?:\/\/.*\.(?:png|jpg|jpeg|gif|webp))/i;
-    const imageMatch = text.match(imageRegex);
-
-    if (imageMatch) {
-        const imageUrl = imageMatch[1];
-        // Remove the URL from the text to use the rest as a caption
-        const caption = text.replace(imageUrl, "").trim();
-        
-        try {
-            console.log(`[safeReply][${chatId}] Sending photo with URL: ${imageUrl}`);
-            const hasMarkdown = /[*_`\[]/.test(caption);
-            const photoOptions = { 
-                ...extra, 
-                caption: caption || undefined,
-                parse_mode: hasMarkdown ? "Markdown" : undefined 
-            };
-            const result = await ctx.replyWithPhoto(imageUrl, photoOptions);
-            console.log(`[safeReply][${chatId}] Photo sent successfully`);
-            return result;
-        } catch (e) {
-            console.error(`[safeReply][${chatId}] Failed to send photo, falling back to text. Error:`, (e as any).message);
-            // If replyWithPhoto fails, fall back to normal text reply
-        }
-    }
-
     const hasMarkdown = /[*_`\[]/.test(text);
     
     try {
@@ -146,26 +172,6 @@ async function safeReply(ctx: any, text: string, extra: any = {}) {
  * Similar to safeReply but for bot.api.sendMessage
  */
 async function safeSendMessage(chatId: string | number, text: string, extra: any = {}) {
-    const imageRegex = /(https?:\/\/.*\.(?:png|jpg|jpeg|gif|webp))/i;
-    const imageMatch = text.match(imageRegex);
-
-    if (imageMatch) {
-        const imageUrl = imageMatch[1];
-        const caption = text.replace(imageUrl, "").trim();
-        
-        try {
-            const hasMarkdown = /[*_`\[]/.test(caption);
-            const photoOptions = { 
-                ...extra, 
-                caption: caption || undefined,
-                parse_mode: hasMarkdown ? "Markdown" : undefined 
-            };
-            return await bot.api.sendPhoto(chatId, imageUrl, photoOptions);
-        } catch (e) {
-            console.error(`[Bot] Failed to sendPhoto, falling back to text. Error:`, (e as any).message);
-        }
-    }
-
     const hasMarkdown = /[*_`\[]/.test(text);
     
     if (!hasMarkdown) {
@@ -409,11 +415,12 @@ function resetIdleTimer(chatId: number) {
             ...history.map((h) => ({ role: h.role as "user" | "assistant" | "system", content: h.content })),
         ];
 
-        const responseText = await generateResponse(messages, 0, chatId, undefined, settings.temperature);
+        const response = await generateResponse(messages, 0, chatId, undefined, settings.temperature);
 
-        if (responseText) {
-            await bot.api.sendMessage(chatId, responseText as string);
-            await addMessage(chatId, "assistant", responseText as string);
+        if (response) {
+            await sendBotResponseApi(chatId, response);
+            const textToSave = response.text || (response.photo ? response.photo.caption || "Photo sent" : "");
+            await addMessage(chatId, "assistant", textToSave);
         }
     } catch (e) {
         console.error(`[Idle] Error in chat ${chatId}`, e);
@@ -610,17 +617,19 @@ async function processChatBatch(chatId: number) {
 
     const aiStartTime = Date.now();
 
-    const responseText = await generateResponse(messages, userId, chatId, scheduleReminder, settings.temperature, 0, !isLucky);
+    const response = await generateResponse(messages, userId, chatId, scheduleReminder, settings.temperature, 0, !isLucky);
 
 
 
-    if (responseText && isLucky) {
+    if (response && isLucky) {
 
         const aiDuration = Date.now() - aiStartTime;
 
-        console.log(`[Bot][${chatId}] Sending passive response (${aiDuration}ms): ${responseText.substring(0, 50)}...`);
-        await safeReply(lastCtx, responseText);
-        await addMessage(chatId, "assistant", responseText as string);
+        const displayText = response.text || (response.photo ? "Photo" : "Response");
+        console.log(`[Bot][${chatId}] Sending passive response (${aiDuration}ms): ${displayText.substring(0, 50)}...`);
+        await sendBotResponse(lastCtx, response);
+        const textToSave = response.text || (response.photo ? response.photo.caption || "Photo sent" : "");
+        await addMessage(chatId, "assistant", textToSave);
     } else {
         console.log(`[Bot][${chatId}] Passive batch: AI chose to remain silent or suppressed (lucky: ${isLucky}).`);
     }
@@ -765,12 +774,14 @@ bot.on("message:text", async (ctx) => {
 
           const scheduleReminder = async (s: number, t: string) => { await addReminder(chatId, userId, t, new Date(Date.now() + s * 1000)); };
           
-          const responseText = await generateResponse(messages, userId, chatId, scheduleReminder, settings.temperature, 0, false);
+          const response = await generateResponse(messages, userId, chatId, scheduleReminder, settings.temperature, 0, false);
 
-          if (responseText) {
-              console.log(`[Bot][${chatId}] Sending response: ${responseText.substring(0, 50)}...`);
-              await safeReply(ctx, responseText);
-              await addMessage(chatId, "assistant", responseText as string);
+          if (response) {
+              const displayText = response.text || (response.photo ? "Photo" : "Response");
+              console.log(`[Bot][${chatId}] Sending response: ${displayText.substring(0, 50)}...`);
+              await sendBotResponse(ctx, response);
+              const textToSave = response.text || (response.photo ? response.photo.caption || "Photo sent" : "");
+              await addMessage(chatId, "assistant", textToSave);
               console.log(`[Bot][${chatId}] Response sent successfully`);
           } else {
               console.log(`[Bot][${chatId}] No response generated`);

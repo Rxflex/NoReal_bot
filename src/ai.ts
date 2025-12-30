@@ -1,6 +1,15 @@
 import OpenAI from "openai";
-import { searchWeb, getFunnyImage } from "./tools";
+import { searchWeb, getFunnyImage, extractUrlContent } from "./tools";
 import { addFact, deleteFact, changeReputation, updateRelationship, getRelationships, getAllUsersInChat, getUser, updateChatSummary } from "./db";
+
+// Response type for generateResponse
+export type BotResponse = {
+  text?: string;
+  photo?: {
+    url: string;
+    caption?: string;
+  };
+};
 
 const client = new OpenAI({
   baseURL: process.env.OPENAI_BASE_URL || "http://localhost:1234/v1",
@@ -41,13 +50,27 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "get_funny_image",
-      description: "Get a funny image, meme, or specific picture based on a keyword.",
+      description: "Get a funny image, meme, gif, or picture. Use this when user asks for memes, pictures, images, gifs, or wants something visual/funny. Always use this for requests like 'скинь мем', 'покажи картинку', 'мемчик', etc.",
       parameters: {
         type: "object",
         properties: {
-          keyword: { type: "string", description: "Keyword for the image (e.g., 'cat', 'fail', 'morning')." },
+          keyword: { type: "string", description: "Keyword for the image (e.g., 'cat', 'fail', 'morning', 'funny', 'meme')." },
         },
         required: ["keyword"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "extract_url_content",
+      description: "Extract and summarize content from a webpage URL. Useful for getting information from articles, news, or any web page.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "The URL to extract content from" },
+        },
+        required: ["url"],
       },
     },
   },
@@ -190,13 +213,13 @@ export async function generateResponse(
   temperature: number = 0.7,
   depth: number = 0,
   background: boolean = false
-) {
+): Promise<BotResponse | null> {
   const startTime = Date.now();
   console.log(`[AI][${chatId}] generateResponse called with userId: ${userId}, depth: ${depth}, background: ${background}`);
   
   if (depth > 5) {
       console.warn(`[AI][${chatId}] Max recursion depth reached.`);
-      return "Уф, я немного запутался. Давай попробуем еще раз.";
+      return { text: "Уф, я немного запутался. Давай попробуем еще раз." };
   }
 
   // If in background mode, add a stealth instruction to the system prompt
@@ -278,8 +301,10 @@ export async function generateResponse(
     // --- Fallback: Parse text-based tool calls if any (for models like DeepSeek/Llama/Minimax) ---
     // Format 1: <function(name){"arg":"val"}></function>
     // Format 2: <tools>{"name": "fn", "arguments": {...}}</tools>
+    // Format 3: function_name(arg="value", arg2="value2")
     const toolRegex1 = /<function\((\w+)\)>(.*?)<\/function>|<function\((\w+)\)({.*?})<\/function>/gs;
     const toolRegex2 = /<tools>(.*?)<\/tools>/gs;
+    const toolRegex3 = /(\w+)\(([^)]+)\)/g;
     
     let match;
     while ((match = toolRegex1.exec(content)) !== null) {
@@ -315,6 +340,35 @@ export async function generateResponse(
             console.error("[AI] Failed to parse Format 2 tool call:", e);
         }
     }
+
+    // Format 3: function_name(arg="value", arg2="value2")
+    const knownTools = ['get_funny_image', 'search_web', 'extract_url_content', 'save_memory', 'set_reminder', 'delete_memory', 'change_user_reputation', 'update_relationship', 'get_chat_info'];
+    while ((match = toolRegex3.exec(content)) !== null) {
+        try {
+            const functionName = match[1];
+            const argsString = match[2];
+            
+            // Only process if it's a known tool
+            if (knownTools.includes(functionName)) {
+                console.log(`[AI] Found Format 3 tool call: ${functionName}(${argsString})`);
+                
+                // Parse arguments like: keyword="vk memories", arg2="value"
+                const args: any = {};
+                const argMatches = argsString.matchAll(/(\w+)=["']([^"']+)["']/g);
+                for (const argMatch of argMatches) {
+                    args[argMatch[1]] = argMatch[2];
+                }
+                
+                toolCalls.push({
+                    id: `call_${Math.random().toString(36).substring(7)}`,
+                    type: 'function',
+                    function: { name: functionName, arguments: JSON.stringify(args) }
+                });
+            }
+        } catch (e) {
+            console.error("[AI] Failed to parse Format 3 tool call:", e);
+        }
+    }
     
     // Remove tool call tags and thinking blocks from content to keep it clean for the user
     content = content.replace(/<\|python_tag\|>/g, "");
@@ -322,10 +376,16 @@ export async function generateResponse(
     content = content.replace(/<function\(.*?\){.*?}<\/function>/gs, "");
     content = content.replace(/<tools>.*?<\/tools>/gs, "");
     content = content.replace(/<think>.*?<\/think>/gs, "");
+    // Remove Format 3 tool calls from content
+    for (const toolName of knownTools) {
+        const regex = new RegExp(`${toolName}\\([^)]+\\)`, 'g');
+        content = content.replace(regex, '');
+    }
     content = content.trim();
 
     // Handle Tool Calls
     if (toolCalls.length > 0) {
+      console.log(`[AI][${chatId}] Found ${toolCalls.length} tool calls:`, toolCalls.map(tc => tc.function.name));
       // Add the assistant's tool-call message to history to maintain context
       messages.push({ ...message, content: content || null, tool_calls: toolCalls as any });
 
@@ -344,7 +404,27 @@ export async function generateResponse(
         if (normFnName === "searchweb") {
           result = await searchWeb(args.query || args.keyword || args.q);
         } else if (normFnName === "getfunnyimage") {
-          result = await getFunnyImage(args.keyword || args.query || args.q);
+          const imageResult = await getFunnyImage(args.keyword || args.query || args.q);
+          
+          // Check if result is JSON (special photo format)
+          try {
+            const photoData = JSON.parse(imageResult);
+            if (photoData.type === "photo" && photoData.url) {
+              // Store photo info for later use
+              (messages as any).__photoToSend = {
+                url: photoData.url,
+                caption: photoData.caption
+              };
+              result = "Photo will be sent";
+            } else {
+              result = imageResult;
+            }
+          } catch {
+            // Not JSON, treat as regular text
+            result = imageResult;
+          }
+        } else if (normFnName === "extracturlcontent") {
+          result = await extractUrlContent(args.url);
         } else if (normFnName === "savememory") {
           const ttl = args.ttl_seconds || args.ttl || args.duration;
           console.log(`[AI][${chatId}] Saving memory for userId ${userId}: ${args.fact || args.memory || args.text}`);
@@ -416,7 +496,17 @@ export async function generateResponse(
 
     const finalResponse = content || message.content;
     console.log(`[AI][${chatId}] Final response (depth: ${depth}): ${finalResponse ? finalResponse.substring(0, 100) + '...' : 'null'}`);
-    return finalResponse;
+    
+    // Check if we have a photo to send
+    const photoToSend = (messages as any).__photoToSend;
+    if (photoToSend) {
+      return {
+        text: finalResponse || undefined,
+        photo: photoToSend
+      };
+    }
+    
+    return finalResponse ? { text: finalResponse } : null;
   } catch (error) {
     console.error(`[AI][${chatId}] Error at depth ${depth}:`, error);
     return null;
