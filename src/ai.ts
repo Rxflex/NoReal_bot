@@ -190,7 +190,7 @@ export async function summarizeHistory(
             model: "qwen/qwen3-next-80b-a3b-instruct",
             messages: summaryMessages,
             temperature: 0.3,
-            max_tokens: 500,
+            max_tokens: 4000,
         });
         
         const summary = response.choices[0]?.message?.content;
@@ -286,7 +286,7 @@ export async function generateResponse(
       tools: tools,
       tool_choice: "auto",
       temperature: temperature,
-      max_tokens: 1000, // Ограничение на количество токенов для ответа
+      max_tokens: 4000, // Ограничение на количество токенов для ответа
     });
 
     const duration = Date.now() - startTime;
