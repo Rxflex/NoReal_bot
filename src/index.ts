@@ -34,10 +34,25 @@ function unlockChat(chatId: number): void {
 }
 
 // Base System Prompt
-const BASE_SYSTEM_PROMPT = process.env.SYSTEM_PROMPT || 
+const getBaseSystemPrompt = () => {
+  const now = new Date();
+  const currentDate = now.toLocaleDateString('ru-RU', { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric' 
+  });
+  const currentTime = now.toLocaleTimeString('ru-RU', { 
+    hour: '2-digit', 
+    minute: '2-digit' 
+  });
+
+  return process.env.SYSTEM_PROMPT || 
   `Ты — парень по имени Норел (от No Real). Твой юзернейм: @TheRoguel_bot. Для близких друзей — Бублик.
    Характер: саркастичный, ироничный, любишь мемы, используешь современный сленг.
    НИКОГДА не признаешь, что ты бот.
+   
+   ТЕКУЩАЯ ДАТА И ВРЕМЯ: ${currentDate}, ${currentTime}
    
    ПРАВИЛО КРАТКОСТИ:
    Пиши максимально кратко, как в мессенджере. 1-2 предложения, не больше. Минимум вежливости, максимум дела. Не пиши полотна текста.
@@ -49,13 +64,30 @@ const BASE_SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ||
    
    ПРАВИЛО ИНСТРУМЕНТОВ:
    - Когда просят мем, картинку, гиф - ОБЯЗАТЕЛЬНО используй get_funny_image(keyword="...")
+   - После вызова get_funny_image напиши короткую саркастичную подпись к фото
    - Когда спрашивают про сайт или ссылку - используй extract_url_content(url="...")
    - Когда нужна актуальная инфа - используй search_web(query="...")
    - НЕ пиши названия функций как текст! Используй их как инструменты!
    - Всегда используй инструменты, когда они подходят к запросу!`;
+};
 
-const PASSIVE_SYSTEM_PROMPT = `
+const getPassiveSystemPrompt = () => {
+  const now = new Date();
+  const currentDate = now.toLocaleDateString('ru-RU', { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric' 
+  });
+  const currentTime = now.toLocaleTimeString('ru-RU', { 
+    hour: '2-digit', 
+    minute: '2-digit' 
+  });
+
+  return `
 Ты — пассивный наблюдатель в чате. Твоя задача — внимательно слушать и запоминать важные детали о жизни пользователей.
+
+ТЕКУЩАЯ ДАТА И ВРЕМЯ: ${currentDate}, ${currentTime}
 
 ПРАВИЛА ЗАПОМИНАНИЯ:
 - Если кто-то упоминает планы (поход к врачу, игра, поездка, день рождения), используй 'save_memory'
@@ -70,6 +102,7 @@ const PASSIVE_SYSTEM_PROMPT = `
 В ПАССИВНОМ режиме ты НЕ должен отвечать текстом, если тебя не просят или если нет ОЧЕНЬ веской причины.
 Если ты решил промолчать, но вызвал инструмент — это идеально.
 `;
+};
 
 const MOOD_PROMPTS: Record<string, string> = {
     "neutral": "",
@@ -400,7 +433,7 @@ function resetIdleTimer(chatId: number) {
 
         const history = await getHistory(chatId, 5);
         const systemMessage = `
-          ${BASE_SYSTEM_PROMPT}
+          ${getBaseSystemPrompt()}
           ${moodPrompt}
           
           [КОНТЕКСТ]
@@ -531,7 +564,7 @@ async function processChatBatch(chatId: number) {
 
     const systemMessageWithMemory = `
 
-    ${PASSIVE_SYSTEM_PROMPT}
+    ${getPassiveSystemPrompt()}
 
     ${moodPrompt}
 
@@ -552,6 +585,9 @@ async function processChatBatch(chatId: number) {
     Твоя Репутация у этого пользователя: ${userReputation}
 
     Факты: ${facts.length > 0 ? facts.join("; ") : "нет данных"}
+    
+    ВАЖНО: Все факты, которые ты сохраняешь через save_memory, будут привязаны к ЭТОМУ пользователю (${firstName}, ID: ${userId}).
+    НЕ сохраняй факты о других людях через save_memory - они будут неправильно привязаны!
 
     
 
@@ -659,7 +695,17 @@ bot.on("message:text", async (ctx) => {
 
 
 
-  console.log(`[Msg][${chatId}] From: ${firstName} (@${username}) in "${chatTitle}": ${text.substring(0, 50)}${text.length > 50 ? '...' : ''}`);
+  // Extract reply information
+  let replyInfo = "";
+  if (ctx.message.reply_to_message) {
+    const replyToUser = ctx.message.reply_to_message.from;
+    const replyToText = ctx.message.reply_to_message.text || "[media]";
+    const replyToName = replyToUser?.first_name || "Unknown";
+    const replyToUsername = replyToUser?.username || "";
+    replyInfo = ` (replying to ${replyToName}${replyToUsername ? ` @${replyToUsername}` : ""}: "${replyToText.substring(0, 50)}${replyToText.length > 50 ? '...' : ''}")`;
+  }
+
+  console.log(`[Msg][${chatId}] From: ${firstName} (@${username}) in "${chatTitle}": ${text.substring(0, 50)}${text.length > 50 ? '...' : ''}${replyInfo}`);
 
 
 
@@ -670,8 +716,18 @@ bot.on("message:text", async (ctx) => {
   // 1. Save User & Message
 
   await upsertUser(userId, username, firstName);
+  
+  // Include reply context in the message
+  let messageToSave = text;
+  if (ctx.message.reply_to_message) {
+    const replyToUser = ctx.message.reply_to_message.from;
+    const replyToText = ctx.message.reply_to_message.text || "[media]";
+    const replyToName = replyToUser?.first_name || "Unknown";
+    const replyToUsername = replyToUser?.username || "";
+    messageToSave = `[Отвечает на сообщение ${replyToName}${replyToUsername ? ` (@${replyToUsername})` : ""}: "${replyToText}"]\n${text}`;
+  }
 
-  await addMessage(chatId, "user", text, firstName, userId);
+  await addMessage(chatId, "user", messageToSave, firstName, userId);
 
 
 
@@ -757,7 +813,7 @@ bot.on("message:text", async (ctx) => {
           const moodPrompt = MOOD_PROMPTS[settings.mood] || "";
 
           const systemMessage = `
-            ${BASE_SYSTEM_PROMPT}
+            ${getBaseSystemPrompt()}
             ${moodPrompt}
             [КРАТКОЕ СОДЕРЖАНИЕ] ${chatSummary || "Нет"}
             [ИНФО] Имя: ${firstName}, Репутация: ${userReputation}

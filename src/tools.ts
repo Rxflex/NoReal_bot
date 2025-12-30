@@ -107,10 +107,10 @@ export async function getFunnyImage(query: string = "funny"): Promise<string> {
   const imageUrl = data.data[randomIndex].images.original.url;
   
   // Return special format that will be processed by the bot
+  // AI will generate the caption separately
   return JSON.stringify({
     type: "photo",
-    url: imageUrl,
-    caption: "Вот. Кот пишет код. Ты — не первый, кто плачет от этого...."
+    url: imageUrl
   });
 }
 

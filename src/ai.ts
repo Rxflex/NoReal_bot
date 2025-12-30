@@ -410,12 +410,11 @@ export async function generateResponse(
           try {
             const photoData = JSON.parse(imageResult);
             if (photoData.type === "photo" && photoData.url) {
-              // Store photo info for later use
+              // Store photo info for later use, but let AI generate caption
               (messages as any).__photoToSend = {
-                url: photoData.url,
-                caption: photoData.caption
+                url: photoData.url
               };
-              result = "Photo will be sent";
+              result = `Found funny image for "${args.keyword || args.query || args.q}". Photo will be sent.`;
             } else {
               result = imageResult;
             }
@@ -501,8 +500,10 @@ export async function generateResponse(
     const photoToSend = (messages as any).__photoToSend;
     if (photoToSend) {
       return {
-        text: finalResponse || undefined,
-        photo: photoToSend
+        photo: {
+          url: photoToSend.url,
+          caption: finalResponse || undefined  // Use AI-generated text as caption
+        }
       };
     }
     
