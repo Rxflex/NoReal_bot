@@ -164,7 +164,7 @@ export async function summarizeHistory(
         ];
         
         const response = await client.chat.completions.create({
-            model: "qwen/qwen3-next-80b-a3b-thinking",
+            model: "qwen/qwen3-next-80b-a3b-instruct",
             messages: summaryMessages,
             temperature: 0.3,
             max_tokens: 500,
@@ -258,7 +258,7 @@ export async function generateResponse(
     console.log(`[AI][${chatId}] Sending request (Messages: ${messages.length}, Size: ${totalChars} chars, Depth: ${depth})`);
     
     const response = await client.chat.completions.create({
-      model: "qwen/qwen3-next-80b-a3b-thinking",
+      model: "qwen/qwen3-next-80b-a3b-instruct",
       messages: messages,
       tools: tools,
       tool_choice: "auto",

@@ -1,3 +1,4 @@
+import "dotenv/config";
 import "reflect-metadata";
 import { Bot, Context } from "grammy";
 import { run } from "@grammyjs/runner";
